@@ -1,0 +1,26 @@
+{
+    "cmscan": "cmscan",
+    "tRNAscan-SE": "tRNAscan-SE",
+    "intervals_file": "PROJECT_DIR/data/confidence_intervals.csv",
+    "rnasamba_model": "PROJECT_DIR/data/full_length_weights.hdf5",
+    "metrics_table": "PROJECT_DIR/data/metrics_table.tsv",
+    "rfam2go": "PROJECT_DIR/data/rfam2go",
+    "quickgo_api": "https://www.ebi.ac.uk/QuickGO/services/annotation/downloadSearch",
+    "coordinates_ftp": "ftp://ftp.ebi.ac.uk/pub/databases/RNAcentral/current_release/genome_coordinates/gff3/",
+    "rna_central_api": "https://rnacentral.org/api/v1/rna",
+    "rfam2go_url": "ftp://ftp.ebi.ac.uk/pub/databases/Rfam/CURRENT/rfam2go/rfam2go",
+    "go_obo_url": "http://purl.obolibrary.org/obo/go.obo",
+    "rfam_cm_url": "ftp://ftp.ebi.ac.uk/pub/databases/Rfam/CURRENT/Rfam.cm.gz",
+
+    "gffcompare": "gffcompare",
+    "rnasamba": "rnasamba",
+    "long_orfs": "TransDecoder.LongOrfs",
+    "minimap2": "minimap2",
+    "diamond": "diamond",
+    
+    "rna_dbs": {},
+    "non_redundant": "",
+    "go_obo": "",
+    "rfam_cm": "",
+    "contaminant_db": ""
+}

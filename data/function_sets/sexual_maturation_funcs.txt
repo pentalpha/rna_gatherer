@@ -1,0 +1,48 @@
+GO:0060065 uterus development
+GO:1903709 uterine gland development
+GO:0075259 spore-bearing structure development
+GO:1990375 baculum development
+GO:0046545 development of primary female sexual characteristics
+GO:0040035 hermaphrodite genitalia development
+GO:0030539 male genitalia development
+GO:0048608 reproductive structure development
+GO:0001890 placenta development
+GO:0048808 male genitalia morphogenesis
+GO:0061458 reproductive system development
+GO:0007506 gonadal mesoderm development
+GO:0046546 development of primary male sexual characteristics
+GO:0046661 male sex differentiation
+GO:0046544 development of secondary male sexual characteristics
+GO:0048071 sex-specific pigmentation
+GO:0010154 fruit development
+GO:0048094 male pigmentation
+GO:0007484 imaginal disc-derived genitalia development
+GO:0001541 ovarian follicle development
+GO:0060067 cervix development
+GO:0072520 seminiferous tubule development
+GO:0030850 prostate gland development
+GO:0090567 reproductive shoot system development
+GO:0008406 gonad development
+GO:0048095 female pigmentation
+GO:0001880 Mullerian duct regression
+GO:0060712 spongiotrophoblast layer development
+GO:0099121 fungal sorus development
+GO:0010228 vegetative to reproductive phase transition of meristem
+GO:0090598 male anatomical structure morphogenesis
+GO:0035112 genitalia morphogenesis
+GO:0007548 sex differentiation
+GO:0030540 female genitalia development
+GO:0035263 genital disc sexually dimorphic development
+GO:0060716 labyrinthine layer blood vessel development
+GO:0048806 genitalia development
+GO:0061107 seminal vesicle development
+GO:0061108 seminal vesicle epithelium development
+GO:0035670 plant-type ovary development
+GO:0035846 oviduct epithelium development
+GO:0048316 seed development
+GO:0060066 oviduct development
+GO:0060525 prostate glandular acinus development
+GO:0046660 female sex differentiation
+GO:0045137 development of primary sexual characteristics
+GO:1905867 epididymis development
+GO:0060711 labyrinthine layer development

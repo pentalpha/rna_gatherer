@@ -1,0 +1,34 @@
+GO:0000307	cyclin-dependent protein kinase holoenzyme complex
+GO:0001545	primary ovarian follicle growth
+GO:0001546	preantral ovarian follicle growth
+GO:0001550	ovarian cumulus expansion
+GO:0002062	chondrocyte differentiation
+GO:0007117	budding cell bud growth
+GO:0007275	multicellular organism development
+GO:0009887	animal organ morphogenesis
+GO:0016049	cell growth
+GO:0030447	filamentous growth
+GO:0032502	developmental process
+GO:0040007	growth
+GO:0040008	regulation of growth
+GO:0042702	uterine wall growth
+GO:0044110	growth involved in symbiotic interaction
+GO:0045926	negative regulation of growth
+GO:0045927	positive regulation of growth
+GO:0048513	animal organ development
+GO:0048562	embryonic organ morphogenesis
+GO:0048568	embryonic organ development
+GO:0048589	developmental growth
+GO:0048598	embryonic morphogenesis
+GO:0048701	embryonic cranial skeleton morphogenesis
+GO:0048702	embryonic neurocranium morphogenesis
+GO:0048704	embryonic skeletal system morphogenesis
+GO:0048705	skeletal system morphogenesis
+GO:0048706	embryonic skeletal system development
+GO:0048854	brain morphogenesis
+GO:0048856	anatomical structure development
+GO:0051216	cartilage development
+GO:0061371	determination of heart left/right asymmetry
+GO:0061448	connective tissue development
+GO:0080189	primary growth
+GO:0080190	lateral growth
