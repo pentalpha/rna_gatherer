@@ -6,7 +6,7 @@ This software may help you solve those problems.
 
 RNA Gatherer is a software with ready to use pipelines for:
 
-- explorer.py: Annotation and prediction of ncRNA in genomes, taking into account transcriptome data, covariance models, reference sequences, reference annotations and data from public APIs;
+- annotate_ncrna.py: Annotation and prediction of ncRNA in genomes, taking into account transcriptome data, covariance models, reference sequences, reference annotations and data from public APIs;
 - prophet.py: Computational prediction of lncRNA functions using gene coexpression;
 
 ## Installation
@@ -39,8 +39,8 @@ Now, open config.json with your favorite text editor. Fill in the empty fields w
 ```json
 [...]
     
-    "rna_dbs": {'DB Name': db_path, 
-        'DB Name 2': db_path_2, ...},
+    "rna_dbs": {"DB Name": "<db_path>", 
+        "DB Name 2": "<db_path_2>", ...},
     "non_redundant": "path/to/nr.fasta",
     "go_obo": "path/to/go.obo",
     "rfam_cm": "path/to/Rfam.cm"
@@ -65,14 +65,14 @@ conda activate rna
 
 ## How To Use
 
-### explorer.py
+### annotate_ncrna.py
 
 This is an extensive pipeline for detecting ncRNA in a given genome. Given a genome (and maybe some optional inputs), it will give you a non-redundant .GFF annotation file and a .TSV file with functional annotations, based on RFAM and other databases.
 
 A basic command would be:
 
 ```sh
-python explorer.py -g [genome.fasta] \
+python annotate_ncrna.py -g [genome.fasta] \
     -tx [taxonomic ID for species] \
     -o [output directory]
 ```
@@ -81,7 +81,7 @@ These are the only required input arguments. But other inputs can be passed in o
 
 This enables the annotation of lncRNA transcripts:
 ```sh
-python explorer.py -g [genome.fasta]\
+python annotate_ncrna.py -g [genome.fasta]\
     -tx [taxonomic ID for species] \
     -tr [transcriptome.fasta] \
     -o [output directory]
@@ -89,7 +89,7 @@ python explorer.py -g [genome.fasta]\
 
 This includes a ncRNA reference annotation file (.gff format):
 ```sh
-python explorer.py -g [genome.fasta] \
+python annotate_ncrna.py -g [genome.fasta] \
     -tx [taxonomic ID for species] \
     -gff [reference.gff] \
     -o [output directory]
@@ -98,7 +98,7 @@ You can find reference files like these for many species [here](ftp://ftp.ebi.ac
 
 Many species have reference ncRNA sequences out there with no position in the genome. RNA Gatherer can map them for you:
 ```sh
-python explorer.py -g [genome.fasta]\
+python annotate_ncrna.py -g [genome.fasta]\
     -tx [taxonomic ID for species] \
     -ref [reference.fasta] \
     -o [output directory]
@@ -106,7 +106,7 @@ python explorer.py -g [genome.fasta]\
 
 For more detailed description of the command line arguments, use --help:
 ```sh
-python explorer.py --help
+python annotate_ncrna.py --help
 ```
 
 ### prophet.py

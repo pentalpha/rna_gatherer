@@ -18,3 +18,5 @@ test/*
 !test/test_mic.py
 !test/LNCRNA2GOA_MF.tsv
 !test/LNCRNA2GOA_BP.tsv
+run_gigas.sh
+up.sh
