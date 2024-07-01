@@ -61,7 +61,7 @@ def test_coding_potential(args, confs, tmpDir, stepDir):
     long_transcripts_path = stepDir["filter_long_orfs"] + "/no_orfs.fasta"
     if os.path.exists(long_transcripts_path):
         output = tmpDir + "/samba.tsv"
-        cmd = " ".join([confs["rnasamba"], "classify", output, 
+        cmd = " ".join(["KERAS_BACKEND=tensorflow", confs["rnasamba"], "classify", output, 
                 long_transcripts_path, confs["rnasamba_model"]])
         code = runCommand(cmd)
         if code != 0:
