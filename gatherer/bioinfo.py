@@ -607,7 +607,7 @@ def join_gffs_in_one(inputs, output):
                             cells[-1] = get_gff_attributes_str(attrs)
                         new_line = "\t".join(cells)+"\n"
                         out_stream.write(new_line)
-                        ids_used.adD(id_used)
+                        ids_used.add(id_used)
     if not wrote and os.path.exists(output):
         os.remove(output)
         return False

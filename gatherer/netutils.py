@@ -51,11 +51,17 @@ def get_rnacentral_json(value, rna_central_api):
     url = rna_central_api+'/'+value
     r = requests.get(url, params = {"format": "json"})
     #print(str(r.json()))
-    data = r.json()
-    if 'rnacentral_id' in data:
-        return data
-    else:
-        return None
+    try:
+        data = r.json()
+        if 'rnacentral_id' in data:
+            return data
+        else:
+            return None
+    except json.decoder.JSONDecodeError as err:
+        print('Error parsing', r)
+        print(value)
+        print(err)
+        raise(err)
 
 def confirm_rnacentral_id(value, rna_central_api):
     """
@@ -82,8 +88,9 @@ def retrieve_rnacentral_id(seq_id, seq, rna_central_api):
             result = get_rnacentral_id_by("external_id",seq_id, rna_central_api)
         if result == None and seq != "":
             result = get_rnacentral_id_by("md5",get_md5(seq), rna_central_api)
-    except Exception:
-        print("Could not retrieve information for " + seq_id)
+    except Exception as err:
+        print("Could not retrieve information for " + seq_id, file=sys.stderr)
+        print(err, file=sys.stderr)
     return result, seq_id, seq
 
 def retrieve_quickgo_annotations(chunk, api_url, taxon_id):
