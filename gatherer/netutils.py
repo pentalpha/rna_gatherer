@@ -38,13 +38,19 @@ def get_rnacentral_id_by(argument, value, rna_central_api):
     """
     url = rna_central_api
     r = requests.get(url, params = {argument: value})
-    data = r.json()
-    if data['count'] > 0:
-        #print("Got response: \n\t" + str(data['results'][0]))
-        #print(value + " matchs an ID in RNACentral: " + str(data['results'][0]['rnacentral_id']))
-        return data['results'][0]['rnacentral_id']
-    else:
-        #print(value + "Does not match an real ID in RNACentral")
+    try:
+        data = json.loads(r.text)
+        if data['count'] > 0:
+            #print("Got response: \n\t" + str(data['results'][0]))
+            #print(value + " matchs an ID in RNACentral: " + str(data['results'][0]['rnacentral_id']))
+            return data['results'][0]['rnacentral_id']
+        else:
+            #print(value + "Does not match an real ID in RNACentral")
+            return None
+    except json.decoder.JSONDecodeError as err:
+        print('Could not retrieve json from', url, r, r.text, file=sys.stderr)
+        print(value, file=sys.stderr)
+        print(err, file=sys.stderr)
         return None
 
 def get_rnacentral_json(value, rna_central_api):
@@ -52,15 +58,15 @@ def get_rnacentral_json(value, rna_central_api):
     r = requests.get(url, params = {"format": "json"})
     #print(str(r.json()))
     try:
-        data = r.json()
+        data = json.loads(r.text)
         if 'rnacentral_id' in data:
             return data
         else:
             return None
     except json.decoder.JSONDecodeError as err:
-        print('Error parsing', r)
-        print(value)
-        print(err)
+        print('Error parsing', value, url, r, r.text, file=sys.stderr)
+        print(value, file=sys.stderr)
+        print(err, file=sys.stderr)
         raise(err)
 
 def confirm_rnacentral_id(value, rna_central_api):
@@ -70,12 +76,18 @@ def confirm_rnacentral_id(value, rna_central_api):
     url = rna_central_api+'/'+value.split("_")[0]
     r = requests.get(url, params = {"format": "json"})
     #print(str(r.json()))
-    data = r.json()
-    if 'rnacentral_id' in data:
-        #print(value + " matchs an real ID in RNACentral")
-        return data['rnacentral_id']
-    else:
-        print(value + " does not match an real ID in RNACentral")
+    try:
+        data = json.loads(r.text)
+        if 'rnacentral_id' in data:
+            #print(value + " matchs an real ID in RNACentral")
+            return data['rnacentral_id']
+        else:
+            print(value + " does not match an real ID in RNACentral", file=sys.stderr)
+            return None
+    except json.decoder.JSONDecodeError as err:
+        print('Could not retrieve json from', url, r, r.text, file=sys.stderr)
+        print(value, file=sys.stderr)
+        print(err, file=sys.stderr)
         return None
 
 def retrieve_rnacentral_id(seq_id, seq, rna_central_api):
