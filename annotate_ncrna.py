@@ -124,6 +124,10 @@ if "extra_db" in cmdArgs:
 if cmdArgs["use_dbs"] == "False":
     confs["rna_dbs"] = {}
 
+rnacentral_details = global_data + '/rnacentral_details.tsv.gz'
+if not os.path.exists(rnacentral_details):
+    download_rnacentral_details(rnacentral_details)
+
 if __name__ == '__main__':
     stepFuncs = [("split_genome", split_genome),
                 ("run_infernal", run_infernal),

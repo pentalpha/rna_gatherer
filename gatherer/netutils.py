@@ -1,7 +1,10 @@
+import gzip
 import hashlib
+from bs4 import BeautifulSoup
 import requests
 import time
 import json
+import ftplib
 from gatherer.util import *
 from gatherer.bioinfo import *
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -403,3 +406,44 @@ def retrieve_func_annotation_rnacentral(annotation_path, output, confs, taxon_id
         with open(output, 'w') as stream:
             for id_, go, aspect in final_results:
                 stream.write(id_+"\t"+go+"\t"+aspect+"\n")
+
+def listFD(url, ext=''):
+    page = requests.get(url).text
+    soup = BeautifulSoup(page, 'html.parser')
+    return [url + '/' + node.get('href') for node in soup.find_all('a') if node.get('href').endswith(ext)]
+
+def download_rnacentral_details(rnacentral_details_output):
+    data_jsons_urls = listFD('https://ftp.ebi.ac.uk/pub/databases/RNAcentral/current_release/json/', 'json')
+    #data_jsons_urls = [data_jsons_urls[0], data_jsons_urls[1]]
+    filenames = ['./'+os.path.basename(d) for d in data_jsons_urls]
+    dumps = ['data/'+os.path.basename(d).replace('.json', '.tsv') for d in filenames]
+    for i in tqdm(range(len(data_jsons_urls))):
+        d = data_jsons_urls[i]
+        dump = dumps[i]
+        filename = filenames[i]
+        if not os.path.exists(dump):
+            output = open(dump, 'w')
+            runCommand('wget --quiet '+d)
+            for entry in json.load(open(filename, 'r')):
+                if 'rna_type' in entry and 'description' in entry and 'rnacentral_id' in entry:
+                    tp = entry['rna_type']
+                    desc = entry['description']
+                    id = entry['rnacentral_id']
+                    output.write(id+'\t'+tp+'\t'+desc+'\n')
+            output.close()
+        #runCommand('rm '+filename)
+    output.close()
+
+    main_output = gzip.open(rnacentral_details_output, 'wt')
+    for i in range(len(data_jsons_urls)):
+        d = data_jsons_urls[i]
+        dump = dumps[i]
+        filename = filenames[i]
+        for rawline in open(dump, 'r'):
+            main_output.write(rawline)
+        runCommand('rm ' + filename + ' ' + dump)
+    main_output.close()
+    quit()
+
+if __name__ == "__main__":
+    download_rnacentral_details('data/rnacentral_details.tsv.gz')
