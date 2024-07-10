@@ -1,8 +1,11 @@
+import gzip
 import os
 import json
 
 rfam2type = {}
+rfam2desc = {}
 rnacentral2rfam = {}
+rnacentral2go = {}
 type_tree = {}
 
 aliases = {"antisense_RNA": "antisense",
@@ -60,6 +63,24 @@ def load_rnacentral2rfam():
             rnacentral = "URS"+cells[0]
             rfam = "RF"+cells[1]
             rnacentral2rfam[rnacentral] = rfam
+    
+    with gzip.open(global_data+"/rnacentral2rfam2.tsv.gz",'rt') as input_stream:
+        for line in input_stream.readlines():
+            cells = line.rstrip("\n").split()
+            rnacentral = "URS"+cells[0]
+            rfam = "RF"+cells[1]
+            rnacentral2rfam[rnacentral] = rfam
+
+def load_rnacentral2go():
+    global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
+    with gzip.open(global_data+"/rnacentral2go.tsv.gz",'rt') as input_stream:
+        for line in input_stream.readlines():
+            cells = line.rstrip("\n").split()
+            rnacentral = "URS"+(cells[0].split('_')[0])
+            goid = "GO:"+cells[1]
+            if not rnacentral in rnacentral2go:
+                rnacentral2go[rnacentral] = set()
+            rnacentral2go[rnacentral].add(goid)
 
 def get_rfam_from_rnacentral(id_, print_response=False):
     if len(rnacentral2rfam.keys()) == 0:
@@ -71,6 +92,17 @@ def get_rfam_from_rnacentral(id_, print_response=False):
         return rnacentral2rfam[id_.split("_"[0])]
     else:
         return None
+    
+def get_goid_from_rnacentral(id_, print_response=False):
+    if len(rnacentral2go.keys()) == 0:
+        load_rnacentral2go()
+
+    if id_ in rnacentral2go:
+        return list(rnacentral2go[id_])
+    elif id_.split("_")[0] in rnacentral2go:
+        return list(rnacentral2go[id_.split("_"[0])])
+    else:
+        return []
 
 def load_rfam2type():
     print("Loading rfam2type")
@@ -82,6 +114,16 @@ def load_rfam2type():
             tp = cells[1]
             rfam2type[rfam] = tp
 
+def load_rfam2desc():
+    print("Loading rfam2desc")
+    global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
+    with gzip.open(global_data+"/rfam2desc.tsv.gz",'rt') as input_stream:
+        for line in input_stream.readlines():
+            cells = line.rstrip("\n").split()
+            rfam = cells[0]
+            desc = cells[1]
+            rfam2desc[rfam] = desc
+
 def get_rna_type(id_):
     if len(rfam2type.keys()) == 0:
         load_rfam2type()
@@ -90,6 +132,17 @@ def get_rna_type(id_):
         id_ = aliases[id_]
     if id_ in rfam2type:
         return rfam2type[id_]
+    else:
+        return None
+    
+def get_rna_desc(id_):
+    if len(rfam2desc.keys()) == 0:
+        load_rfam2desc()
+
+    if id_ in aliases:
+        id_ = aliases[id_]
+    if id_ in rfam2desc:
+        return rfam2desc[id_]
     else:
         return None
 

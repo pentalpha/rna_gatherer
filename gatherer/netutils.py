@@ -155,7 +155,7 @@ def retrieve_quickgo_annotations(chunk, api_url, taxon_id):
                                     requestURL = requestURL.replace(",,",",")
                                 #print("New request URL:\n\t" + requestURL)
                         tries += 1
-                    except exception:
+                    except Exception:
                         tries += 1
             except:
                 tries += 1
@@ -223,18 +223,36 @@ def parallel_rnacentral_requester(to_retrieve, seqs_dict, confs, tries = 3):
             tries = 0
     return info_by_id
 
+def load_rnacentral_details(rnacentral_ids):
+    short_ids = [x.split('_')[0] for x in rnacentral_ids]
+    global_data = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + "/data"
+    input_path = global_data + '/rnacentral_details.tsv.gz'
+
+    tps = {}
+    descs = {}
+    for rawline in gzip.open(input_path, 'rt'):
+        cells = rawline.rstrip('\n').split('\t')
+        if len(cells) == 3:
+            short_id = cells[0].split('_')[0]
+            if short_id in short_ids:
+                tps[short_id] = cells[1]
+                descs[short_id] = cells[2]
+    
+    return tps, descs
+
 def update_with_info(annotation_path, output_path, confs, 
     sep_id_by_dot = True, seqs_dict = None):
     annotation = pd.read_csv(annotation_path, sep="\t", header=None, names=["seqname", 
                 "source", "feature", "start", "end", "score", "strand", "frame", "attribute"])
     raw_ids = [get_gff_attributes(attr_str)["ID"] 
-    for attr_str in annotation["attribute"].tolist()]
+        for attr_str in annotation["attribute"].tolist()]
     to_retrieve = [".".join(_id.split(".")[:-1]) for _id in raw_ids] if sep_id_by_dot else raw_ids
 
     if seqs_dict == None:
         seqs_dict = {}
 
-    info_by_id = parallel_rnacentral_requester(to_retrieve, seqs_dict, confs)
+    #info_by_id = parallel_rnacentral_requester(to_retrieve, seqs_dict, confs)
+    rnacentral_rna_type, rnacentral_rna_desc = load_rnacentral_details(to_retrieve)
 
     retrieval_stats = {"total": 0, "rfams_attributed": 0,
             "descriptions_attributed": 0,
@@ -250,22 +268,22 @@ def update_with_info(annotation_path, output_path, confs,
             print("Row could not have attributes parsed:\n\t"+str(row))
         if attributes != None:
             short_id = ".".join(attributes["ID"].split(".")[:-1])
-            rfam_id = get_rfam_from_rnacentral(short_id.split("_")[0])
+            short_id2 = short_id.split("_")[0]
+            rfam_id = get_rfam_from_rnacentral(short_id2)
+            rnacentral_desc = rnacentral_rna_desc[short_id2] if short_id2 in rnacentral_rna_desc else None
+            rnacentral_tp = rnacentral_rna_type[short_id2] if short_id2 in rnacentral_rna_type else None
             if not "rfam" in attributes and rfam_id != None:
                 if len(rfam_id) == 7:
                     attributes["rfam"] = rfam_id
                     retrieval_stats["rfams_attributed"] += 1
-            if short_id in info_by_id:
-                new_name, description, rna_type = info_by_id[short_id]
-                if not "description" in attributes and description != None:
-                    attributes["description"] = description
-                    retrieval_stats["descriptions_attributed"] += 1
-                if not "type" in attributes and rna_type != None:
-                    attributes["type"] = rna_type
-                    retrieval_stats["types_attributed"] += 1
-                if new_name != None:
-                    attributes["ID"] = attributes["ID"].replace(short_id, new_name)
-                    retrieval_stats["IDs_attributed"] += 1
+            
+            if not "description" in attributes and rnacentral_desc != None:
+                attributes["description"] = rnacentral_desc
+                retrieval_stats["descriptions_attributed"] += 1
+            if not "type" in attributes and rnacentral_tp != None:
+                attributes["type"] = rnacentral_tp
+                retrieval_stats["types_attributed"] += 1
+            
         retrieval_stats["total"] += 1
         return get_gff_attributes_str(attributes)
     annotation["attribute"] = annotation.apply(lambda row: update_attribute(row,
@@ -384,7 +402,12 @@ def retrieve_func_annotation_rnacentral(annotation_path, output, confs, taxon_id
     
     to_retrieve = get_ids_from_annotation(annotation)
     term_ontologies = get_term_ontology(confs["go_obo"])
-    results = go_from_rnacentral(to_retrieve, confs['rna_central_api'], taxon_id)
+    #results = go_from_rnacentral(to_retrieve, confs['rna_central_api'], taxon_id)
+    results = []
+    for x in to_retrieve:
+        for new_goid in get_goid_from_rnacentral(x):
+            results.append((x, new_goid))
+
     final_results = []
     for id_, go in results:
         if go in term_ontologies:
@@ -444,6 +467,63 @@ def download_rnacentral_details(rnacentral_details_output):
         runCommand('rm ' + filename + ' ' + dump)
     main_output.close()
     quit()
+
+def download_rnacentral2rfam2(rnacentral2rfam2_path):
+    download_raw_path = os.path.dirname(rnacentral2rfam2_path) + '/rfam_annotations.tsv.gz'
+    if not os.path.exists(download_raw_path):
+        runCommand("cd "+os.path.dirname(rnacentral2rfam2_path)
+            +"&&  wget --quiet https://ftp.ebi.ac.uk/pub/databases/RNAcentral/current_release/rfam/rfam_annotations.tsv.gz")
+    
+    annots2 = set()
+    rfam2desc = {}
+    print('Reading', download_raw_path)
+    for rawline in gzip.open(download_raw_path, 'rt'):
+        cells = rawline.rstrip("\n").split('\t')
+        rnacentral = cells[0]
+        rfam = cells[1]
+        desc = cells[8]
+        rfam2desc[rfam] = desc
+        annots2.add(rnacentral[3:]+"\t"+rfam[2:]+"\n")
+    
+    print('Sorting annotations read')
+    annots2 = list(annots2)
+    annots2.sort()
+
+    print('Saving in compressed format')
+    with gzip.open(rnacentral2rfam2_path, 'wt') as output:
+        for rawline in annots2:
+            output.write(rawline)
+
+    print('Saving rfam descriptions')
+    with gzip.open(os.path.dirname(rnacentral2rfam2_path) + '/rfam2desc.tsv.gz', 'wt') as output:
+        for rfam, desc in rfam2desc.items():
+            output.write(rfam + '\t' + desc + '\n')
+
+def download_rnacentral2go(rnacentral2go_path):
+    datadir = os.path.dirname(rnacentral2go_path)
+    download_raw_path =  datadir + '/rnacentral_rfam_annotations.tsv.gz'
+    if not os.path.exists(download_raw_path):
+        runCommand("cd "+os.path.dirname(datadir)
+            +"&&  wget --quiet https://ftp.ebi.ac.uk/pub/databases/RNAcentral/current_release/go_annotations/rnacentral_rfam_annotations.tsv.gz")
+    
+    annots = set()
+    print('Reading', download_raw_path)
+    for rawline in gzip.open(download_raw_path, 'rt'):
+        cells = rawline.rstrip("\n").split('\t')
+        if len(cells) >= 2:
+            rnacentral = cells[0]
+            goid = cells[1]
+            
+            annots.add(rnacentral[3:]+"\t"+goid[3:]+"\n")
+    
+    print('Sorting go annotations read')
+    annots = list(annots)
+    annots.sort()
+
+    print('Saving in compressed format at', rnacentral2go_path)
+    with gzip.open(rnacentral2go_path, 'wt') as output:
+        for rawline in annots:
+            output.write(rawline)
 
 if __name__ == "__main__":
     download_rnacentral_details('data/rnacentral_details.tsv.gz')

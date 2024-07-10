@@ -128,6 +128,15 @@ rnacentral_details = global_data + '/rnacentral_details.tsv.gz'
 if not os.path.exists(rnacentral_details):
     download_rnacentral_details(rnacentral_details)
 
+rnacentral2rfam2 = global_data + '/rnacentral2rfam2.tsv.gz'
+rfam2desc = global_data + '/rfam2desc.tsv.gz'
+if not os.path.exists(rnacentral2rfam2) or not os.path.exists(rfam2desc):
+    download_rnacentral2rfam2(rnacentral2rfam2)
+
+rnacentral2go = global_data + '/rnacentral2go.tsv.gz'
+if not os.path.exists(rnacentral2go):
+    download_rnacentral2go(rnacentral2go)
+
 if __name__ == '__main__':
     stepFuncs = [("split_genome", split_genome),
                 ("run_infernal", run_infernal),

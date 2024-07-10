@@ -123,7 +123,14 @@ def update_attrs(attr_str):
     
     if "rfam" in attrs:
         new_type = get_rna_type(attrs["rfam"])
+        new_desc = get_rna_desc(attrs["rfam"])
         attrs["type"] = new_type
+        if new_desc != None:
+            if not "description" in attrs:
+                attrs["description"] = new_desc
+            else:
+                if attrs["description"] == "" or attrs["description"] == None:
+                    attrs["description"] = new_desc
     else:
         if not "type" in attrs:
             attrs["type"] = "other"
