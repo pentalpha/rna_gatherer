@@ -55,21 +55,23 @@ def get_full_type(rna_type):
     else:
         return ";".join([rna_type])
 
-def load_rnacentral2rfam():
+def load_rnacentral2rfam(load_to = {}):
     global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
     with open(global_data+"/rnacentral2rfam.tsv",'r') as input_stream:
         for line in input_stream.readlines():
             cells = line.rstrip("\n").split()
             rnacentral = "URS"+cells[0]
             rfam = "RF"+cells[1]
-            rnacentral2rfam[rnacentral] = rfam
+            load_to[rnacentral] = rfam
     
     with gzip.open(global_data+"/rnacentral2rfam2.tsv.gz",'rt') as input_stream:
         for line in input_stream.readlines():
             cells = line.rstrip("\n").split()
             rnacentral = "URS"+cells[0]
             rfam = "RF"+cells[1]
-            rnacentral2rfam[rnacentral] = rfam
+            load_to[rnacentral] = rfam
+    
+    return load_to
 
 def load_rnacentral2go():
     global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
@@ -84,7 +86,7 @@ def load_rnacentral2go():
 
 def get_rfam_from_rnacentral(id_, print_response=False):
     if len(rnacentral2rfam.keys()) == 0:
-        load_rnacentral2rfam()
+        load_rnacentral2rfam(load_to=rnacentral2rfam)
 
     if id_ in rnacentral2rfam:
         return rnacentral2rfam[id_]

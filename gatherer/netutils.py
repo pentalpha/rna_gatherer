@@ -5,6 +5,7 @@ import requests
 import time
 import json
 import ftplib
+from gatherer.final_steps import read_rfam2go
 from gatherer.util import *
 from gatherer.bioinfo import *
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -240,79 +241,162 @@ def load_rnacentral_details(rnacentral_ids):
     
     return tps, descs
 
-def update_with_info(annotation_path, output_path, confs, 
-    sep_id_by_dot = True, seqs_dict = None):
+def load_all_rnacentral_details():
+    global_data = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + "/data"
+    input_path = global_data + '/rnacentral_details.tsv.gz'
+
+    tps = {}
+    descs = {}
+    for rawline in gzip.open(input_path, 'rt'):
+        cells = rawline.rstrip('\n').split('\t')
+        if len(cells) == 3:
+            short_id = cells[0].split('_')[0]
+            tps[short_id] = cells[1]
+            descs[short_id] = cells[2]
+    
+    return tps, descs
+
+def update_with_info(annotation_path, output_path, 
+        sep_id_by_dot = True):
+    print('Reading', annotation_path, file=sys.stderr)
     annotation = pd.read_csv(annotation_path, sep="\t", header=None, names=["seqname", 
                 "source", "feature", "start", "end", "score", "strand", "frame", "attribute"])
-    raw_ids = [get_gff_attributes(attr_str)["ID"] 
-        for attr_str in annotation["attribute"].tolist()]
-    to_retrieve = [".".join(_id.split(".")[:-1]) for _id in raw_ids] if sep_id_by_dot else raw_ids
-
-    if seqs_dict == None:
-        seqs_dict = {}
-
-    #info_by_id = parallel_rnacentral_requester(to_retrieve, seqs_dict, confs)
-    rnacentral_rna_type, rnacentral_rna_desc = load_rnacentral_details(to_retrieve)
-
-    retrieval_stats = {"total": 0, "rfams_attributed": 0,
-            "descriptions_attributed": 0,
-            "types_attributed": 0,
-            "IDs_attributed": 0}
     
-    def update_attribute(row, retrieval_stats):
-        attr_str = row["attribute"]
-        attributes = None
-        try:
-            attributes = get_gff_attributes(attr_str)
-        except:
-            print("Row could not have attributes parsed:\n\t"+str(row))
-        if attributes != None:
-            short_id = ".".join(attributes["ID"].split(".")[:-1])
-            short_id2 = short_id.split("_")[0]
-            rfam_id = get_rfam_from_rnacentral(short_id2)
-            rnacentral_desc = rnacentral_rna_desc[short_id2] if short_id2 in rnacentral_rna_desc else None
-            rnacentral_tp = rnacentral_rna_type[short_id2] if short_id2 in rnacentral_rna_type else None
-            if not "rfam" in attributes and rfam_id != None:
-                if len(rfam_id) == 7:
-                    attributes["rfam"] = rfam_id
-                    retrieval_stats["rfams_attributed"] += 1
-            
-            if not "description" in attributes and rnacentral_desc != None:
-                attributes["description"] = rnacentral_desc
-                retrieval_stats["descriptions_attributed"] += 1
-            if not "type" in attributes and rnacentral_tp != None:
-                attributes["type"] = rnacentral_tp
-                retrieval_stats["types_attributed"] += 1
-            
+    info_fields1 = annotation["attribute"].tolist()
+
+    print('Loading RNACentral tables', file=sys.stderr)
+    all_rnacentral_rfam = load_rnacentral2rfam()
+    all_rnacentral_rna_type, all_rnacentral_rna_desc = load_all_rnacentral_details()
+
+    print('Getting info from tables', file=sys.stderr)
+    info_fields2 = []
+    retrieval_stats = {"total": 0, "rfams_attributed": 0,
+        "descriptions_attributed": 0,
+        "types_attributed": 0,
+        "IDs_attributed": 0}
+    for attr_str in tqdm(info_fields1):
+        attributes = get_gff_attributes(attr_str)
+        raw_id = attributes["ID"]
+        first_part = ".".join(raw_id.split(".")[:-1]) if sep_id_by_dot else raw_id
+        rna_id = first_part.split('_')[0]
+        
+        if not "rfam" in attributes and rna_id in all_rnacentral_rfam:
+            attributes["rfam"] = all_rnacentral_rfam[rna_id]
+            retrieval_stats["rfams_attributed"] += 1
+        if not "description" in attributes and rna_id in all_rnacentral_rna_desc:
+            attributes["description"] = all_rnacentral_rna_desc[rna_id]
+            retrieval_stats["descriptions_attributed"] += 1
+        if not "type" in attributes and rna_id in all_rnacentral_rna_type:
+            attributes["type"] = all_rnacentral_rna_type[rna_id]
+            retrieval_stats["types_attributed"] += 1
+
         retrieval_stats["total"] += 1
-        return get_gff_attributes_str(attributes)
-    annotation["attribute"] = annotation.apply(lambda row: update_attribute(row,
-                                                                    retrieval_stats),
-                                            axis=1)
+        attr_str2 = get_gff_attributes_str(attributes)
+        info_fields2.append(attr_str2)
+    
+    print('Saving to', output_path)
+    annotation["attribute"] = info_fields2
     annotation.to_csv(output_path, sep="\t", index=False, header=False)
 
     return retrieval_stats
 
-def retrieve_func_annotation(annotation_path, output, confs, taxon_id):
+def get_term_ontology(go_obo):
+    learned = {}
+    with open(go_obo, 'r') as stream:
+        ids_to_assign = []
+        namespace = ""
+        for line in stream:
+            if "[Term]" in line:
+                if namespace != "":
+                    for id_ in ids_to_assign:
+                        learned[id_] = namespace
+                        namespace = ""
+                ids_to_assign = []
+            elif "namespace: " in line:
+                namespace = line.replace("namespace: ", "").rstrip("\n")
+            elif "id: " in line:
+                new_id = line.replace("id: ", "").rstrip("\n")
+                ids_to_assign.append(new_id)
+            elif "alt_id: " in line:
+                new_id = line.replace("alt_id: ", "").rstrip("\n")
+                ids_to_assign.append(new_id)
+        if namespace != "":
+            for id_ in ids_to_assign:
+                learned[id_] = namespace
+                namespace = ""
+    return learned
+
+def retrieve_func_annotation(annotation_path, output, confs):
     annotation = pd.read_csv(annotation_path, sep="\t", header=None, 
                 names=["seqname", "source", "feature", "start", "end", 
                         "score", "strand", "frame", "attribute"])
+    
+    info_fields1 = annotation["attribute"].tolist()
 
-    to_retrieve = get_ids_from_annotation(annotation)
-    id_chunks = chunks(list(to_retrieve), 75)
+    print('Loading RNACentral tables', file=sys.stderr)
+    global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
+    rnacentral2go = {}
+    with gzip.open(global_data+"/rnacentral2go.tsv.gz",'rt') as input_stream:
+        for line in input_stream.readlines():
+            cells = line.rstrip("\n").split()
+            rnacentral = "URS"+(cells[0].split('_')[0])
+            goid = "GO:"+cells[1]
+            if not rnacentral in rnacentral2go:
+                rnacentral2go[rnacentral] = set()
+            rnacentral2go[rnacentral].add(goid)
+
+    print("Loading rfam2go associations")
+    rfam2go = read_rfam2go(global_data + "/rfam2go")
+
+    print('Getting info from tables', file=sys.stderr)
     results = set()
-    annotations_retrieved = False
+    retrieval_stats = {"total_with_func": 0, "by_rfam": 0,
+        "by_rnacentral": 0, "no_func": 0}
+    
+    for attr_str in tqdm(info_fields1):
+        attributes = get_gff_attributes(attr_str)
+        raw_id = attributes["ID"]
 
-    for chunk in tqdm(list(id_chunks)):
-        annotations = retrieve_quickgo_annotations(chunk, confs["quickgo_api"], taxon_id)
-        for id_, go, aspect in annotations:
-            results.add((id_, go, aspect))
-            annotations_retrieved = True
+        first_part = ".".join(raw_id.split(".")[:-1])
+        rna_id = first_part.split('_')[0]
+        results_before = retrieval_stats['by_rnacentral'] + retrieval_stats['by_rfam']
+        if rna_id in rnacentral2go:
+            for goid in rnacentral2go[rna_id]:
+                new_item = (raw_id, goid)
+                results.add(new_item)
+            retrieval_stats['by_rnacentral'] += 1
+        
+        if 'rfam' in attributes:
+            rfam_id = attributes['rfam']
+            if rfam_id in rfam2go:
+                added = False
+                for goid in rfam2go[rfam_id]:
+                    new_item = (raw_id, goid)
+                    if not new_item in results:
+                        added = True
+                    results.add(new_item)
+                if added:
+                    retrieval_stats['by_rfam'] += 1
+        
+        results_after = retrieval_stats['by_rnacentral'] + retrieval_stats['by_rfam']
+        if results_after > results_before:
+            retrieval_stats['total_with_func'] += 1
+        else:
+            retrieval_stats['no_func'] += 1
+    
+    print(retrieval_stats)
 
-    if annotations_retrieved:
+    term_ontologies = get_term_ontology(confs["go_obo"])
+
+    if len(results) > 0:
+        results = list(results)
+        results.sort()
         with open(output, 'w') as stream:
-            for id_, go, aspect in results:
-                stream.write(id_+"\t"+go+"\t"+aspect+"\n")
+            for id_, go in results:
+                ont = term_ontologies[go] if go in term_ontologies else ''
+                stream.write(id_+"\t"+go+"\t"+ont+"\n")
+    
+    return retrieval_stats
 
 def get_gene_annotation(gene_name, base_url, taxid):
     if base_url[-1] != '/':
@@ -369,66 +453,6 @@ def go_from_rnacentral(id_list, api_url, taxid, tries = 3):
             tries = 0
     return associations
 
-def get_term_ontology(go_obo):
-    learned = {}
-    with open(go_obo, 'r') as stream:
-        ids_to_assign = []
-        namespace = ""
-        for line in stream:
-            if "[Term]" in line:
-                if namespace != "":
-                    for id_ in ids_to_assign:
-                        learned[id_] = namespace
-                        namespace = ""
-                ids_to_assign = []
-            elif "namespace: " in line:
-                namespace = line.replace("namespace: ", "").rstrip("\n")
-            elif "id: " in line:
-                new_id = line.replace("id: ", "").rstrip("\n")
-                ids_to_assign.append(new_id)
-            elif "alt_id: " in line:
-                new_id = line.replace("alt_id: ", "").rstrip("\n")
-                ids_to_assign.append(new_id)
-        if namespace != "":
-            for id_ in ids_to_assign:
-                learned[id_] = namespace
-                namespace = ""
-    return learned
-
-def retrieve_func_annotation_rnacentral(annotation_path, output, confs, taxon_id):
-    annotation = pd.read_csv(annotation_path, sep="\t", header=None, 
-                names=["seqname", "source", "feature", "start", "end", 
-                        "score", "strand", "frame", "attribute"])
-    
-    to_retrieve = get_ids_from_annotation(annotation)
-    term_ontologies = get_term_ontology(confs["go_obo"])
-    #results = go_from_rnacentral(to_retrieve, confs['rna_central_api'], taxon_id)
-    results = []
-    for x in to_retrieve:
-        for new_goid in get_goid_from_rnacentral(x):
-            results.append((x, new_goid))
-
-    final_results = []
-    for id_, go in results:
-        if go in term_ontologies:
-            final_results.append((id_,go,term_ontologies[go]))
-        else:
-            print(go, "from", id_, "is an unknown term.")
-    '''id_chunks = chunks(list(to_retrieve), 75)
-    results = set()
-    annotations_retrieved = False
-
-    for chunk in tqdm(list(id_chunks)):
-        annotations = retrieve_quickgo_annotations(chunk, confs["rna_central_api"], taxon_id)
-        for id_, go, aspect in annotations:
-            results.add((id_, go, aspect))
-            annotations_retrieved = True
-
-    if annotations_retrieved:'''
-    if len(final_results) > 0:
-        with open(output, 'w') as stream:
-            for id_, go, aspect in final_results:
-                stream.write(id_+"\t"+go+"\t"+aspect+"\n")
 
 def listFD(url, ext=''):
     page = requests.get(url).text

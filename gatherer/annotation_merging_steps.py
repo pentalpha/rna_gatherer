@@ -25,25 +25,17 @@ def get_info(args, confs, tmpDir, stepDir):
                                 all_gff_path)
 
     if wrote:
-        seqs = {}
-        if "reference_fasta" in args:
-            reference_fasta_path = args["reference_fasta"]
-            seqs = readSeqsFromFasta(args["reference_fasta"])
-            seqs = {header_to_id(header): seq for header,seq in seqs}
         retrieval_stats = update_with_info(all_gff_path, 
-                                        tmpDir + "/annotation_with_meta.gff",
-                                        confs, seqs_dict = seqs)
+                                        tmpDir + "/annotation_with_meta.gff")
         print("Information retrieval results: " + "\n\t".join([stat_name+": "+str(value)
                                     for stat_name, value in retrieval_stats.items()]))
-        
-        '''retrieve_func_annotation_rnacentral(all_gff_path, tmpDir + "/retrieved_functions.id2go",
-                                confs, args['taxon_id'])'''
+        json.dump(retrieval_stats, open(tmpDir + '/rnacentral_consulting_stats.json', 'w'), indent=4)
     return True
 
 def get_functional_info(args, confs, tmpDir, stepDir):
     all_gff_path = stepDir["get_info"] + "/annotation_with_meta.gff"
-    retrieve_func_annotation_rnacentral(all_gff_path, tmpDir + "/retrieved_functions.id2go",
-                                confs, args['taxon_id'])
+    retrieval_stats = retrieve_func_annotation(all_gff_path, tmpDir + "/retrieved_functions.id2go", confs)
+    json.dump(retrieval_stats, open(tmpDir + '/retrieval_stats.json', 'w'), indent=4)
     return True
 
 def run_gffcompare(args, confs, tmpDir, stepDir):
