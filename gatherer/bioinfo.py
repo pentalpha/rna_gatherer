@@ -556,8 +556,14 @@ def get_gff_attributes(attrs):
 def get_gff_attributes_str(attrs):
     x = ""
     for key in attrs.keys():
-        value = attrs[key]
-        x += key+"="+value+";"
+        try:
+            value = attrs[key]
+            x += key+"="+value+";"
+        except TypeError as err:
+            print(err)
+            print(attrs)
+            print(key, value)
+            quit()
     x = x.rstrip(";")
     return x
 
@@ -586,7 +592,9 @@ def join_gffs_in_one(inputs, output):
     with open(output, 'w') as out_stream:
         for input_file in inputs:
             if os.path.exists(input_file):
+                print('Writing', input_file, 'to', output)
                 wrote = True
+                total_lines = 0
                 with open(input_file, 'r') as in_stream:
                     for line in in_stream:
                         cells = line.rstrip("\n").split("\t")
@@ -607,38 +615,51 @@ def join_gffs_in_one(inputs, output):
                             cells[-1] = get_gff_attributes_str(attrs)
                         new_line = "\t".join(cells)+"\n"
                         out_stream.write(new_line)
+                        total_lines += 1
+
                         ids_used.add(id_used)
+                print('Wrote', total_lines)
     if not wrote and os.path.exists(output):
         os.remove(output)
         return False
     return wrote
 
 def remove_redundant_names(inputs, output_dir):
-    outputs = {f: output_dir + "/" + os.path.basename(f) for f in inputs}
+    outputs = {f: output_dir + "/" + os.path.basename(f).replace('.gff', '.unique.gff') for f in inputs}
     ids_used = set()
     for in_file, out_file in outputs.items():
-        with open(out_file, 'w') as out_stream:
-            with open(in_file, 'r') as in_stream:
-                for line in in_stream:
-                    cells = line.rstrip("\n").split("\t")
-                    attrs = get_gff_attributes(cells[-1])
-                    id_used = attrs['ID']
-                    i = 0
-                    while id_used in ids_used:
-                        print("The ID", id_used, "has already been used.")
-                        parts = id_used.split('.')
-                        if len(parts) == 1:
-                            parts = [parts[0], ""]
-                        parts[-1] = str(i)
-                        id_used = ".".join(parts)
-                        i += 1
-                    if attrs['ID'] != id_used:
-                        print("Using", id_used, "instead.")
-                        attrs['ID'] = id_used
-                        cells[-1] = get_gff_attributes_str(attrs)
-                    new_line = "\t".join(cells)+"\n"
-                    out_stream.write(new_line)
-                    ids_used.add(id_used)
+        out_stream = open(out_file, 'w')
+        in_stream = open(in_file, 'r')
+        
+        original_ids = 0
+        renamed = 0
+        for line in in_stream:
+            cells = line.rstrip("\n").split("\t")
+            attrs = get_gff_attributes(cells[-1])
+            id_used = attrs['ID']
+            i = 0
+            while id_used in ids_used:
+                #print("The ID", id_used, "has already been used.")
+                parts = id_used.split('.')
+                if len(parts) == 1:
+                    parts = [parts[0], ""]
+                parts[-1] = str(i)
+                id_used = ".".join(parts)
+                i += 1
+            if attrs['ID'] != id_used:
+                #print("Using", id_used, "instead.")
+                attrs['ID'] = id_used
+                cells[-1] = get_gff_attributes_str(attrs)
+                renamed += 1
+            else:
+                original_ids += 1
+            new_line = "\t".join(cells)+"\n"
+            out_stream.write(new_line)
+            ids_used.add(id_used)
+        
+        print(in_file, out_file)
+        print('original kept:', original_ids, 'renamed:', renamed)
+    
     return list(outputs.values())
 
 def short_ontology_name(onto_type):

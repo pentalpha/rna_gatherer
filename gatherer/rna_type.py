@@ -2,6 +2,8 @@ import gzip
 import os
 import json
 
+import pandas as pd
+
 rfam2type = {}
 rfam2desc = {}
 rnacentral2rfam = {}
@@ -37,23 +39,32 @@ def load_rna_types():
         for key, value in loaded_tree.items():
             type_tree[key] = value
 
-def get_type_list(rna_type):
+def load_rna_types2():
+    type_tree = {}
+    global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
+    with open(global_data+"/ncRNA_type-tree.json", 'r') as in_stream:
+        json_str = in_stream.read()
+        loaded_tree = json.loads(json_str)
+        for key, value in loaded_tree.items():
+            type_tree[key] = value
+    return type_tree
+
+def get_type_list(rna_type, type_tree):
     parent_type = type_tree[rna_type]["parent"]
     if parent_type != None:
-        return get_type_list(parent_type) + [parent_type]
+        return get_type_list(parent_type, type_tree) + [parent_type]
     else:
         return []
 
-def get_full_type(rna_type):
+def standardize_rna_type(rna_type, type_tree):
     if rna_type in aliases:
         rna_type = aliases[rna_type]
-    if len(type_tree.keys()) == 0:
-        load_rna_types()
 
     if rna_type in type_tree:
-        return ";".join(get_type_list(rna_type) + [rna_type])
+        parent_types = get_type_list(rna_type, type_tree)
+        return "|".join(parent_types + [rna_type])
     else:
-        return ";".join([rna_type])
+        return "|".join([rna_type])
 
 def load_rnacentral2rfam(load_to = {}):
     global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
@@ -125,6 +136,35 @@ def load_rfam2desc():
             rfam = cells[0]
             desc = cells[1]
             rfam2desc[rfam] = desc
+
+def load_rfam_details():
+    rfam2desc = {}
+    rfam2type = {}
+    rfam2name = {}
+    global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
+    with gzip.open(global_data+"/rfam2desc.tsv.gz",'rt') as input_stream:
+        for line in input_stream.readlines():
+            cells = line.rstrip("\n").split()
+            rfam = cells[0]
+            desc = cells[1]
+            rfam2desc[rfam] = desc
+    with open(global_data+"/rfam2type.tsv",'r') as input_stream:
+        for line in input_stream.readlines():
+            cells = line.rstrip("\n").split()
+            rfam = cells[0]
+            tp = cells[1]
+            rfam2type[rfam] = tp
+    rfam_site_families = global_data+'/rfam_site_families.tsv'
+    df = pd.read_csv(rfam_site_families, sep='\t')
+    for index, row in df.iterrows():
+        name = row['ID']
+        rfam = row['Accession']
+        tp = row['Type']
+        desc = row['Description']
+        rfam2desc[rfam] = desc
+        rfam2type[rfam] = tp.replace('; ', '|')
+        rfam2name[rfam] = name
+    return rfam2desc, rfam2type, rfam2name
 
 def get_rna_type(id_):
     if len(rfam2type.keys()) == 0:

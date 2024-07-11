@@ -267,13 +267,16 @@ def update_with_info(annotation_path, output_path,
     print('Loading RNACentral tables', file=sys.stderr)
     all_rnacentral_rfam = load_rnacentral2rfam()
     all_rnacentral_rna_type, all_rnacentral_rna_desc = load_all_rnacentral_details()
+    print('Loading RFAM tables', file=sys.stderr)
+    rfam2desc, rfam2type, rfam2name = load_rfam_details()
 
     print('Getting info from tables', file=sys.stderr)
     info_fields2 = []
     retrieval_stats = {"total": 0, "rfams_attributed": 0,
         "descriptions_attributed": 0,
         "types_attributed": 0,
-        "IDs_attributed": 0}
+        "IDs_attributed": 0,
+        "names_attributed": 0}
     for attr_str in tqdm(info_fields1):
         attributes = get_gff_attributes(attr_str)
         raw_id = attributes["ID"]
@@ -289,6 +292,20 @@ def update_with_info(annotation_path, output_path,
         if not "type" in attributes and rna_id in all_rnacentral_rna_type:
             attributes["type"] = all_rnacentral_rna_type[rna_id]
             retrieval_stats["types_attributed"] += 1
+        if "rfam" in attributes:
+            rfam_id = attributes['rfam']
+            if not "description" in attributes:
+                if rfam_id in rfam2desc:
+                    attributes['description'] = rfam2desc[rfam_id]
+                    retrieval_stats["descriptions_attributed"] += 1
+            if not "type" in attributes:
+                if rfam_id in rfam2type:
+                    attributes['type'] = rfam2type[rfam_id]
+                    retrieval_stats["types_attributed"] += 1
+            if not "name" in attributes:
+                if rfam_id in rfam2name:
+                    attributes['name'] = rfam2name[rfam_id]
+                    retrieval_stats["names_attributed"] += 1
 
         retrieval_stats["total"] += 1
         attr_str2 = get_gff_attributes_str(attributes)
@@ -326,13 +343,7 @@ def get_term_ontology(go_obo):
                 namespace = ""
     return learned
 
-def retrieve_func_annotation(annotation_path, output, confs):
-    annotation = pd.read_csv(annotation_path, sep="\t", header=None, 
-                names=["seqname", "source", "feature", "start", "end", 
-                        "score", "strand", "frame", "attribute"])
-    
-    info_fields1 = annotation["attribute"].tolist()
-
+def retrieve_func_annotation(gff_paths, output, confs):
     print('Loading RNACentral tables', file=sys.stderr)
     global_data = os.path.dirname(os.path.realpath(__file__)) + "/../data"
     rnacentral2go = {}
@@ -353,36 +364,43 @@ def retrieve_func_annotation(annotation_path, output, confs):
     retrieval_stats = {"total_with_func": 0, "by_rfam": 0,
         "by_rnacentral": 0, "no_func": 0}
     
-    for attr_str in tqdm(info_fields1):
-        attributes = get_gff_attributes(attr_str)
-        raw_id = attributes["ID"]
+    for annotation_path in tqdm(gff_paths):
+        annotation = pd.read_csv(annotation_path, sep="\t", header=None, 
+                    names=["seqname", "source", "feature", "start", "end", 
+                            "score", "strand", "frame", "attribute"])
+        
+        info_fields1 = annotation["attribute"].tolist()
 
-        first_part = ".".join(raw_id.split(".")[:-1])
-        rna_id = first_part.split('_')[0]
-        results_before = retrieval_stats['by_rnacentral'] + retrieval_stats['by_rfam']
-        if rna_id in rnacentral2go:
-            for goid in rnacentral2go[rna_id]:
-                new_item = (raw_id, goid)
-                results.add(new_item)
-            retrieval_stats['by_rnacentral'] += 1
-        
-        if 'rfam' in attributes:
-            rfam_id = attributes['rfam']
-            if rfam_id in rfam2go:
-                added = False
-                for goid in rfam2go[rfam_id]:
+        for attr_str in tqdm(info_fields1):
+            attributes = get_gff_attributes(attr_str)
+            raw_id = attributes["ID"]
+
+            first_part = ".".join(raw_id.split(".")[:-1])
+            rna_id = first_part.split('_')[0]
+            results_before = retrieval_stats['by_rnacentral'] + retrieval_stats['by_rfam']
+            if rna_id in rnacentral2go:
+                for goid in rnacentral2go[rna_id]:
                     new_item = (raw_id, goid)
-                    if not new_item in results:
-                        added = True
                     results.add(new_item)
-                if added:
-                    retrieval_stats['by_rfam'] += 1
-        
-        results_after = retrieval_stats['by_rnacentral'] + retrieval_stats['by_rfam']
-        if results_after > results_before:
-            retrieval_stats['total_with_func'] += 1
-        else:
-            retrieval_stats['no_func'] += 1
+                retrieval_stats['by_rnacentral'] += 1
+            
+            if 'rfam' in attributes:
+                rfam_id = attributes['rfam']
+                if rfam_id in rfam2go:
+                    added = False
+                    for goid in rfam2go[rfam_id]:
+                        new_item = (raw_id, goid)
+                        if not new_item in results:
+                            added = True
+                        results.add(new_item)
+                    if added:
+                        retrieval_stats['by_rfam'] += 1
+            
+            results_after = retrieval_stats['by_rnacentral'] + retrieval_stats['by_rfam']
+            if results_after > results_before:
+                retrieval_stats['total_with_func'] += 1
+            else:
+                retrieval_stats['no_func'] += 1
     
     print(retrieval_stats)
 

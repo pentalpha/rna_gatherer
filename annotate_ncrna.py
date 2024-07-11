@@ -4,6 +4,10 @@ import argparse
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import requests
+from bs4 import BeautifulSoup
+from io import StringIO
+
 from gatherer.util import runCommand
 
 from config import *
@@ -136,6 +140,22 @@ if not os.path.exists(rnacentral2rfam2) or not os.path.exists(rfam2desc):
 rnacentral2go = global_data + '/rnacentral2go.tsv.gz'
 if not os.path.exists(rnacentral2go):
     download_rnacentral2go(rnacentral2go)
+
+def download_rfam_family_table(output_path, url='https://rfam.org/families'):
+    page = requests.get(url).text
+    soup = BeautifulSoup(page, 'html.parser')
+    tables_html = soup.find_all('table')
+    dfs = pd.read_html(StringIO(str(tables_html)))
+    for df in dfs:
+        if 'Description' in df.columns and 'Type' in df.columns:
+            df = df[['ID', 'Accession', 'Type', 'Description']]
+            df.to_csv(output_path, sep='\t', index=False)
+            return df
+    return None
+
+rfam_families_df_path = global_data+'/rfam_site_families.tsv'
+if not os.path.exists(rfam_families_df_path):
+    download_rfam_family_table(rfam_families_df_path)
 
 if __name__ == '__main__':
     stepFuncs = [("split_genome", split_genome),

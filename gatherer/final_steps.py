@@ -75,7 +75,7 @@ def get_tax_name(id, ncbi):
     return str(ids[0])
 
 def get_rna_type_str(rna_name, gene_details):
-    tp = gene_details[rna_name]['type'].split(";")
+    tp = gene_details[rna_name]['type'].split("|")
     if len(tp) == 1 or tp[0] == 'Cis-reg':
         return tp[0]
     else:
@@ -245,13 +245,13 @@ def get_ncrna_type(attrs_str):
         return "other"
 
 def get_subtype(tp):
-    parts = tp.split(";")
+    parts = tp.split("|")
     if len(parts) == 1:
         return "No subtype"
     else:
         return parts[1]
 
-def group_rows(input_rows):
+'''def group_rows(input_rows):
     higher_level = 100
     for row in input_rows:
         level = len(row[0].split(";"))
@@ -298,7 +298,7 @@ def sort_by_genes(input_rows):
     input_rows.sort(key=lambda row: row[0], reverse=False)
     grouped = group_rows(input_rows)
     new_rows = expand_groups(grouped)
-    return new_rows
+    return new_rows'''
 
 def review_df(df, sources):
     by_source = {src: len(src_group) for src, src_group in df.groupby(["source"])}
@@ -317,20 +317,20 @@ def review_annotations(args, confs, tmpDir, stepDir):
     
     type_lists = []
     print("Retrieving rna_type")
-    annotation["rna_type"]    = annotation.apply(lambda row: get_ncrna_type(row["attribute"]).split(";")[0],
+    annotation["rna_type"]    = annotation.apply(lambda row: get_ncrna_type(row["attribute"]).split("|")[0],
                                                 axis = 1)
     annotation["rna_subtype"] = annotation.apply(lambda row: get_subtype(get_ncrna_type(row["attribute"])),
                                                 axis = 1)
-    sources = annotation["source"].tolist()
+    sources = source_list
     sources.sort()
     for rna_type, type_df in annotation.groupby(['rna_type']):
         type_rnas, families, by_source = review_df(type_df,sources)
-        type_line = [rna_type, type_rnas, families] + [by_source[src] for src in sources]
+        type_line = [rna_type, type_rnas, len(families)] + [by_source[src] for src in sources]
 
         subtype_lines = []
         for subtype, subtype_df in type_df.groupby(['rna_subtype']):
             subtype_rnas, subtype_families, subtype_by_source = review_df(subtype_df, sources)
-            subtype_line = [subtype, subtype_rnas, subtype_families] + [subtype_by_source[src] for src in sources]
+            subtype_line = [subtype, subtype_rnas, len(subtype_families)] + [subtype_by_source[src] for src in sources]
             subtype_lines.append(subtype_line)
         subtype_lines.sort(key=lambda x: x[1], reverse=True)
         if len(subtype_lines) >= 2:
@@ -340,7 +340,7 @@ def review_annotations(args, confs, tmpDir, stepDir):
     type_lists.sort(key=lambda x: x[0][1], reverse=True)
 
     all_rnas, all_families, all_by_source = review_df(annotation, sources)
-    type_lists.append(["All", all_rnas, all_families] + [all_by_source[src] for src in sources])
+    type_lists.append([["All", all_rnas, len(all_families)] + [all_by_source[src] for src in sources], []])
     review_rows = []
     for tp, subtps in type_lists:
         tp[0] += "\t"
@@ -355,7 +355,9 @@ def review_annotations(args, confs, tmpDir, stepDir):
     with open(tmpDir+"/type_review.tsv",'w') as stream:
         stream.write("\t".join(['ncRNA Types\t', 'Number of ncRNAs', 'RFAM Families'] + sources)+"\n")
         for cells in review_rows:
-            stream.write("\t".join([str(x) for x in cells])+"\n")
+            newline = "\t".join([str(x) for x in cells])
+            stream.write(newline+'\n')
+            print(newline)
 
     '''print("Counting RNA Types...")
     def count_rna_types(df):
