@@ -176,6 +176,55 @@ def retrieve_quickgo_annotations(chunk, api_url, taxon_id):
         print("No annotations retrieved for " + gene_ids)'''
     return result
 
+class QuickGoRetriever():
+
+    def __init__(self, api_url, taxon_id, waittime) -> None:
+        self.api_url = api_url
+        self.taxon_id = taxon_id
+        self.aspects = ["biological_process","molecular_function","cellular_component"]
+        self.downloaded = 0
+        self.waittime = waittime
+
+    def retrieve_quickgo_prot_annotations(self, chunk):
+        result = []
+        gene_lines = []
+        gene_ids = ",".join(chunk)
+        
+        for aspect in self.aspects:
+            requestURL = (self.api_url+"?selectedFields=geneProductId,taxonId,goId&geneProductId="
+                            +gene_ids+"&taxonId="+self.taxon_id+"&aspect="+aspect)
+            tries = 0
+            response_lines = []
+            max_tries = 5
+            while tries < max_tries:
+                if tries > 0:
+                    #print("Trying again, waiting " + str(tries*tries))
+                    time.sleep(tries*tries)
+                #print("Requesting:\n\t"+requestURL)
+                try:
+                    response = requests.get(requestURL, headers={"Accept":"text/tsv"})
+                    if response.ok:
+                        #print("Got okay response")
+                        text = response.text
+                        lines = text.split("\n")[1:]
+                        response_lines = [line.split("\t")+[aspect] for line in lines]
+                        tries = max_tries
+                    else:
+                        print('Error for', requestURL)
+                except:
+                    tries += 1
+            gene_lines += response_lines
+            time.sleep(self.waittime)
+        
+        for line in gene_lines:
+            if len(line) > 1:
+                if line[0] != "":
+                    result += [line[1:]]
+        self.downloaded += len(chunk)
+        if self.downloaded % 1000 == 0:
+            print('Downloaded annotations for', self.downloaded, 'proteins')
+        return result
+
 def get_gene_info(gene_name, confs, sequence):
     new_id, old_id, seq = retrieve_rnacentral_id(gene_name, sequence,
                                     confs["rna_central_api"])
