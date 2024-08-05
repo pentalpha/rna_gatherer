@@ -11,9 +11,12 @@ import numpy as np
 import argparse
 import multiprocessing
 import pandas as pd
-
+import gffutils
+import pyfaidx
+from tqdm import tqdm
 from os import path, mkdir
 
+from gatherer.bioinfo import cov_id_from_minimap_line
 from gatherer.netutils import QuickGoRetriever
 
 '''
@@ -36,6 +39,8 @@ def getArgs():
     ap.add_argument("-g", "--genome", required=True,
         help=("Path to genome fasta"))
     ap.add_argument("-o", "--output-dir", required=True, help=("Output directory."))
+    ap.add_argument("-cov", "--coverage", required=True, help=("Minimum protein coverage"))
+    ap.add_argument("-id", "--identity", required=True, help=("Minimum protein identity"))
     
     default_threads = max(2, multiprocessing.cpu_count()-1)
     ap.add_argument("-p", "--processes", required=False,
@@ -49,8 +54,9 @@ if __name__ == '__main__':
     parent_taxon_id = cmdArgs["taxon_id"]
     output_dir = cmdArgs["output_dir"]
     go_path = confs["go_obo"]
-
     threads = int(cmdArgs["processes"])
+    min_coverage = float(cmdArgs["coverage"])
+    min_identity = float(cmdArgs["identity"])
     if not path.exists(output_dir):
         mkdir(output_dir)
 
@@ -138,10 +144,108 @@ if __name__ == '__main__':
         annotated_proteins_fasta_file.close()
 
     protein_alignment_path = path.join(output_dir, 'annotated_proteins.gff')
-    #if not path.exists(protein_alignment_path):
-    miniprot_cmd2 = [
-        confs['miniprot'], '-t', str(int(threads/2)), 
-        '--gff', genome_path,
-        annotated_proteins_fasta, '>', protein_alignment_path
-    ]
-    code = runCommand(' '.join(miniprot_cmd2))
+    if not path.exists(protein_alignment_path):
+        miniprot_cmd2 = [
+            confs['miniprot'], '-t', str(int(threads/2)), 
+            '--gff', genome_path,
+            annotated_proteins_fasta, '>', protein_alignment_path
+        ]
+        code = runCommand(' '.join(miniprot_cmd2))
+
+    protein_alignment_filtered_path = path.join(output_dir, 'annotated_proteins.filtered.gff')
+    paf_id = None
+    paf_cov = None
+
+    protein_alignment_filtered_file = open(protein_alignment_filtered_path, 'w')
+    mRNA_count = 0
+    mRNA_kept = 0
+    mRNA_small_cov = 0
+    mRNA_small_id = 0
+    last_mrna_kept = False
+    for rawline in open(protein_alignment_path, 'r'):
+        
+        if rawline.startswith('##PAF\t'):
+            rawline = rawline.replace('##PAF\t', '')
+            cells = rawline.rstrip('\n').split('\t')
+            paf_cov, paf_id = cov_id_from_minimap_line(cells)
+        else:
+            cells = rawline.rstrip('\n').split('\t')
+            if len(cells) >= 9:
+                if cells[2] == 'mRNA':
+                    mRNA_count += 1
+                    if paf_cov and paf_id:
+                        cells[8] = ('PAFIdentity='+str(round(paf_id, 4))
+                                    +';PAFCoverage='+str(round(paf_cov, 4))
+                                    +';'+cells[8])
+                    info_fields = {part.split('=')[0]: part.split('=')[1] for part in cells[8].split(';')}
+                    if (float(info_fields['Identity']) >= min_identity
+                        and float(info_fields['PAFCoverage']) >= min_coverage):
+                        protein_alignment_filtered_file.write('\t'.join(cells)+'\n')
+                        mRNA_kept += 1
+                        last_mrna_kept = True
+
+                    elif float(info_fields['Identity']) < min_identity:
+                        mRNA_small_id += 1
+                        last_mrna_kept = False
+                    elif float(info_fields['PAFCoverage']) < min_coverage:
+                        mRNA_small_cov += 1
+                        last_mrna_kept = False
+                    else:
+                        last_mrna_kept = False
+                else:
+                    if last_mrna_kept:
+                        protein_alignment_filtered_file.write(rawline)
+            else:
+                protein_alignment_filtered_file.write(rawline)
+
+            paf_cov = None
+            paf_id = None
+    protein_alignment_filtered_file.close()
+    
+    print('mRNA_count', mRNA_count)
+    print('mRNA_kept', mRNA_kept)
+    print('mRNA_kept/mRNA_count', mRNA_kept/mRNA_count)
+    print('mRNA_small_id', mRNA_small_id)
+    print('mRNA_small_cov', mRNA_small_cov)
+
+    protein_alignment_filtered_fasta_path = path.join(output_dir, 
+        'annotated_proteins.filtered.mRNA.fasta')
+    if not path.exists(protein_alignment_filtered_fasta_path) or True:
+        print('Loading', protein_alignment_filtered_path)
+        db = gffutils.create_db(protein_alignment_filtered_path, 
+            protein_alignment_filtered_path+'.db', 
+            force=True, )
+        print('Loading', genome_path)
+        fasta = pyfaidx.Fasta(genome_path)
+        print('Loaded inputs, creating', protein_alignment_filtered_fasta_path)
+
+        print('Collecting mRNA names')
+        cds_by_parent = {}
+        parent_to_protein_name = {}
+        targets = set()
+        for mRNA in tqdm(db.features_of_type('mRNA', order_by='start')):
+            target = mRNA.attributes['Target'][0]
+            targets.add(target.split(' ')[0])
+            mrna_id = mRNA.attributes['ID'][0]
+            #print(mrna_id, target)
+            parent_to_protein_name[mrna_id] = target
+            cds_by_parent[mrna_id] = ''
+        
+        print('Collecting cds sequences')
+        for cds in tqdm(db.features_of_type('CDS', order_by='start')):
+            cds_parent = cds.attributes['Parent'][0]
+            cds_seq = cds.sequence(fasta)
+            if cds_parent in cds_by_parent:
+                cds_by_parent[cds_parent] += cds_seq
+        
+        print('Writing mRNA sequences')
+        fasta_output = open(protein_alignment_filtered_fasta_path, 'w')
+        for mrna_id, protein_name in parent_to_protein_name.items():
+            coding_sequence = cds_by_parent[mrna_id]
+            fasta_output.write('>'+protein_name+' '+mrna_id+'\n')
+            fasta_output.write(coding_sequence+'\n')
+        
+        fasta_output.close()
+
+        print(len(parent_to_protein_name.keys()), 'mRNAs writen')
+        print('Of', len(targets), 'proteins')

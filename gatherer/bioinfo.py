@@ -171,6 +171,19 @@ def blast(query, db, max_evalue = 0.001, threads=8,
     code = runCommand(cmd)
     return code == 0
 
+def cov_id_from_minimap_line(cells: list):
+    qlen = int(cells[1])
+    qstart = int(cells[2])
+    qend = int(cells[3])
+
+    matchs = int(cells[9])
+    block_len = int(cells[10])
+
+    qcovs = (qend-qstart)/qlen
+    identity = matchs/block_len
+
+    return qcovs, identity
+
 def minimap_annotation(alignment_file, gff_name, 
         new_fasta, source, mol_type=None, min_cov = 0.95, min_id = 0.95,
         db_name = None, query_file = None):
