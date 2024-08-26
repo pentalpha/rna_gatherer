@@ -32,34 +32,9 @@ confs = {}
 for conf in configs:
     confs[conf] = configs[conf]
 
-def getArgs():
-    ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-txid", "--taxon-id", required=True,
-        help=("Base taxon to download protein sequences and annotations"))
-    ap.add_argument("-g", "--genome", required=True,
-        help=("Path to genome fasta"))
-    ap.add_argument("-o", "--output-dir", required=True, help=("Output directory."))
-    ap.add_argument("-cov", "--coverage", required=True, help=("Minimum protein coverage"))
-    ap.add_argument("-id", "--identity", required=True, help=("Minimum protein identity"))
+def create_mrna_annotation(genome_path, parent_taxon_id, output_dir, 
+        threads, min_coverage, min_identity):
     
-    default_threads = max(2, multiprocessing.cpu_count()-1)
-    ap.add_argument("-p", "--processes", required=False,
-        default=default_threads, help=("CPUs to use. Default: " + str(default_threads)+"."))
-    
-    return vars(ap.parse_args())
-
-if __name__ == '__main__':
-    cmdArgs = getArgs()
-    genome_path = cmdArgs["genome"]
-    parent_taxon_id = cmdArgs["taxon_id"]
-    output_dir = cmdArgs["output_dir"]
-    go_path = confs["go_obo"]
-    threads = int(cmdArgs["processes"])
-    min_coverage = float(cmdArgs["coverage"])
-    min_identity = float(cmdArgs["identity"])
-    if not path.exists(output_dir):
-        mkdir(output_dir)
-
     output_proteins = path.join(output_dir, 'proteins.fasta.gz')
     if not path.exists(output_proteins):
         cmd = "wget -O OUTPUT https://rest.uniprot.org/uniprotkb/stream\?compressed\=true\&format\=fasta\&includeIsoform\=true\&query\=%28%28taxonomy_id%3A27723%29%29"
@@ -210,7 +185,7 @@ if __name__ == '__main__':
 
     protein_alignment_filtered_fasta_path = path.join(output_dir, 
         'annotated_proteins.filtered.mRNA.fasta')
-    if not path.exists(protein_alignment_filtered_fasta_path) or True:
+    if not path.exists(protein_alignment_filtered_fasta_path):
         print('Loading', protein_alignment_filtered_path)
         db = gffutils.create_db(protein_alignment_filtered_path, 
             protein_alignment_filtered_path+'.db', 
@@ -249,3 +224,116 @@ if __name__ == '__main__':
 
         print(len(parent_to_protein_name.keys()), 'mRNAs writen')
         print('Of', len(targets), 'proteins')
+    
+    return (protein_alignment_filtered_fasta_path, 
+        protein_alignment_filtered_path,
+        annotations_path)
+
+def create_all_rnas_fasta(output_dir, ncrna_fasta_path, mrna_fasta_path):
+    output_path = output_dir + '/coding_and_noncoding.fasta'
+    output = open(output_path, 'w')
+    for f in [ncrna_fasta_path, mrna_fasta_path]:
+        input_f = open(f, 'r')
+        for line in input_f:
+            if line.startswith(">"):
+                output.write(line.rstrip("\n")+'\n')
+            else:
+                output.write(line.rstrip("\n")+'\n')
+        input_f.close()
+    output.close()
+
+    index_path = output_path+'.salmon_idx'
+    if not path.exists(index_path):
+        index_cmd = ['salmon', 'index', '-t', output_path, 
+            '-i', index_path, '-k 31']
+        print(index_cmd)
+        runCommand(' '.join(index_cmd))
+    return output_path, index_path
+
+def run_salmon(output_dir, index_path, fastqs_table, procs):
+    samples = {}
+    fastqs_dir = path.dirname(fastqs_table)
+    for rawline in open(fastqs_table, 'r'):
+        cells = rawline.rstrip('\n').split('\t')
+        if len(cells) == 2:
+            gname = cells[0]
+            r1, r2 = cells[1].split(',')
+            samples[gname] = (fastqs_dir+'/'+r1, fastqs_dir+'/'+r2)
+            print(gname, samples[gname])
+        else:
+            print('not two columns:')
+            print(rawline)
+            quit(1)
+    
+    salmon_quant_dir = output_dir + '/salmon_quant'
+    if not path.exists(salmon_quant_dir):
+        mkdir(salmon_quant_dir)
+    salmon_results = {}
+    print('Running salmon quant for samples')
+    for sample_name, fastqs in tqdm(samples.items()):
+        print(sample_name)
+        #salmon quant -i transcripts_index -l <LIBTYPE> -1 reads1.fq -2 reads2.fq -o transcripts_quant
+        sample_quant_dir = salmon_quant_dir+'/'+sample_name
+        sample_quant_file = sample_quant_dir+'/quant.sf'
+        stdout_path = sample_quant_dir+'.stdout'
+        stderr_path = sample_quant_dir+'.stderr'
+        if not path.exists(sample_quant_file):
+            quant_cmd = ['salmon', 'quant', '-i', index_path, '-l IU', 
+                        '-1', fastqs[0], '-2', fastqs[1], '-o', sample_quant_dir,
+                        '-p', str(procs), '2>'+stderr_path, '1>'+stdout_path]
+            print(quant_cmd)
+            runCommand(' '.join(quant_cmd))
+        else:
+            print(sample_quant_file, 'already created')
+        salmon_results[sample_name] = sample_quant_file
+
+def getArgs():
+    ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-txid", "--taxon-id", required=True,
+        help=("Base taxon to download protein sequences and annotations"))
+    ap.add_argument("-g", "--genome", required=True,
+        help=("Path to genome fasta"))
+    ap.add_argument("-nc", "--nc-rna-fasta", required=True,
+        help=("Path to fasta file with ncRNA sequences"))
+    ap.add_argument("-fq", "--fastq-table", required=True,
+        help=("Path to .TSV file where first column is the tissue name and"
+              +" second column is a ',' separated list of .fastq.gz files."))
+    ap.add_argument("-o", "--output-dir", required=True, help=("Output directory."))
+    ap.add_argument("-cov", "--coverage", required=True, help=("Minimum protein coverage"))
+    ap.add_argument("-id", "--identity", required=True, help=("Minimum protein identity"))
+    
+    default_threads = max(2, multiprocessing.cpu_count()-1)
+    ap.add_argument("-p", "--processes", required=False,
+        default=default_threads, help=("CPUs to use. Default: " + str(default_threads)+"."))
+    
+    return vars(ap.parse_args())
+
+if __name__ == '__main__':
+    cmdArgs = getArgs()
+    genome_path = cmdArgs["genome"]
+    parent_taxon_id = cmdArgs["taxon_id"]
+    output_dir = cmdArgs["output_dir"]
+    go_path = confs["go_obo"]
+    threads = int(cmdArgs["processes"])
+    min_coverage = float(cmdArgs["coverage"])
+    min_identity = float(cmdArgs["identity"])
+    fastq_table_path = cmdArgs['fastq_table']
+    ncrna_fasta_path = cmdArgs['nc_rna_fasta']
+    if not path.exists(output_dir):
+        mkdir(output_dir)
+
+    protein_annot = create_mrna_annotation(genome_path, 
+        parent_taxon_id, output_dir, threads, min_coverage, 
+        min_identity)
+    
+    mrna_fasta_path = protein_annot[0]
+    protein_alignment_gff_path = protein_annot[1]
+    protein_go_annotations_path = protein_annot[2]
+
+    all_rnas_fasta, all_rnas_index = create_all_rnas_fasta(output_dir, ncrna_fasta_path, 
+        mrna_fasta_path)
+
+    count_reads_table = run_salmon(output_dir, all_rnas_index, 
+        fastq_table_path, threads)
+
+    
