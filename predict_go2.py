@@ -286,6 +286,62 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
         else:
             print(sample_quant_file, 'already created')
         salmon_results[sample_name] = sample_quant_file
+    
+    print('Loading salmon TPM counts')
+    loaded_series = {}
+    to_collapse = {}
+    not_collapse = []
+    for sample_name, sample_quant_file in salmon_results.items():
+        input = open(sample_quant_file, 'r')
+        header = input.readline()
+        data = []
+        index = []
+        for rawline in input:
+            cells = rawline.rstrip('\n').split('\t')
+            seqid = cells[0]
+            tpm = float(cells[3])
+            index.append(seqid)
+            data.append(tpm)
+        loaded_series[sample_name] = pd.Series(data=data, index=index)
+
+        if (('Female' or 'Male' in sample_name) 
+            and not ('gonad' in sample_name.lower())):
+            if 'Female' in sample_name:
+                generic_name, _ = sample_name.split('Female')
+            elif 'Male' in sample_name:
+                generic_name, _ = sample_name.split('Male')
+            generic_name = generic_name.rstrip('_')
+            
+            if not generic_name in to_collapse:
+                to_collapse[generic_name] = []
+            to_collapse[generic_name].append(sample_name)
+        else:
+            not_collapse.append(sample_name)
+    
+    df = pd.DataFrame()
+    for sample_name, serie in loaded_series.items():
+        df[sample_name] = serie
+    print(df.head())
+    no_sex_df = pd.DataFrame()
+    for not_collapse_n in not_collapse:
+        no_sex_df[not_collapse_n] = loaded_series[not_collapse_n]
+    
+    for sample_name, sex_specific_names in to_collapse.items():
+        first = loaded_series[sex_specific_names[0]].copy()
+        if len(sex_specific_names) == 2:
+            other = loaded_series[sex_specific_names[1]]
+            first = first + other
+        no_sex_df[sample_name] = first
+    print(no_sex_df.head())
+
+    df.index.name = 'Name'
+    no_sex_df.index.name = 'Name'
+    df_path = output_dir + '/samples_tpm.tsv'
+    no_sex_df_path = output_dir + '/samples_tpm-nosex.tsv'
+    df.to_csv(df_path, sep='\t')
+    no_sex_df.to_csv(no_sex_df_path, sep='\t')
+
+    return df_path, no_sex_df
 
 def getArgs():
     ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -333,7 +389,7 @@ if __name__ == '__main__':
     all_rnas_fasta, all_rnas_index = create_all_rnas_fasta(output_dir, ncrna_fasta_path, 
         mrna_fasta_path)
 
-    count_reads_table = run_salmon(output_dir, all_rnas_index, 
+    count_reads_table1, count_reads_table2 = run_salmon(output_dir, all_rnas_index, 
         fastq_table_path, threads)
 
     
