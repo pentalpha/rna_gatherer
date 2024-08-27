@@ -4,10 +4,9 @@ Author: Pitágoras Alves (github.com/pentalpha)
 """
 
 import gzip
+import json
+from math import ceil
 import random
-import sys
-import obonet
-import numpy as np
 import argparse
 import multiprocessing
 import pandas as pd
@@ -15,6 +14,7 @@ import gffutils
 import pyfaidx
 from tqdm import tqdm
 from os import path, mkdir
+from multiprocessing import Pool
 
 from gatherer.bioinfo import cov_id_from_minimap_line
 from gatherer.netutils import QuickGoRetriever
@@ -257,8 +257,8 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
         cells = rawline.rstrip('\n').split('\t')
         if len(cells) == 2:
             gname = cells[0]
-            r1, r2 = cells[1].split(',')
-            samples[gname] = (fastqs_dir+'/'+r1, fastqs_dir+'/'+r2)
+            fastqs = [fastqs_dir+'/'+x for x in cells[1].split(',')]
+            samples[gname] = fastqs
             print(gname, samples[gname])
         else:
             print('not two columns:')
@@ -270,6 +270,9 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
         mkdir(salmon_quant_dir)
     salmon_results = {}
     print('Running salmon quant for samples')
+    salmon_cmds = []
+    parallel_salmons = 3
+    threads_per_salmon = ceil(procs/parallel_salmons)
     for sample_name, fastqs in tqdm(samples.items()):
         print(sample_name)
         #salmon quant -i transcripts_index -l <LIBTYPE> -1 reads1.fq -2 reads2.fq -o transcripts_quant
@@ -278,19 +281,35 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
         stdout_path = sample_quant_dir+'.stdout'
         stderr_path = sample_quant_dir+'.stderr'
         if not path.exists(sample_quant_file):
-            quant_cmd = ['salmon', 'quant', '-i', index_path, '-l IU', 
-                        '-1', fastqs[0], '-2', fastqs[1], '-o', sample_quant_dir,
-                        '-p', str(procs), '2>'+stderr_path, '1>'+stdout_path]
-            print(quant_cmd)
-            runCommand(' '.join(quant_cmd))
+            if len(fastqs) == 2:
+                fastqs_str = '-1 ' + fastqs[0] + ' -2 ' +fastqs[1]
+                lib_type = '-l IU'
+            else:
+                fastqs_str = '-r ' + fastqs[0]
+                #lib_type = '-l SF'
+                lib_type = '-l U'
+            quant_cmd = ['salmon', 'quant', '-i', index_path, lib_type, 
+                        fastqs_str, '-o', sample_quant_dir,
+                        '-p', str(threads_per_salmon), '2>'+stderr_path, 
+                        '1>'+stdout_path]
+            #print(quant_cmd)
+            #runCommand(' '.join(quant_cmd))
+            salmon_cmds.append(' '.join(quant_cmd))
         else:
             print(sample_quant_file, 'already created')
         salmon_results[sample_name] = sample_quant_file
+    
+    if len(salmon_cmds) > 0:
+        print('Running salmon quant for', len(salmon_cmds), 'samples')
+        with Pool(parallel_salmons) as pool:
+            pool.map(runCommand, salmon_cmds)
     
     print('Loading salmon TPM counts')
     loaded_series = {}
     to_collapse = {}
     not_collapse = []
+    male_gonad_samples = []
+    female_gonad_samples = []
     for sample_name, sample_quant_file in salmon_results.items():
         input = open(sample_quant_file, 'r')
         header = input.readline()
@@ -302,10 +321,21 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
             tpm = float(cells[3])
             index.append(seqid)
             data.append(tpm)
+        if max(data) < 1:
+            print(sample_quant_file, 'has zero tpm counts higher than zero')
+            quit(1)
         loaded_series[sample_name] = pd.Series(data=data, index=index)
 
-        if (('Female' or 'Male' in sample_name) 
-            and not ('gonad' in sample_name.lower())):
+        if 'gonad' in sample_name.lower():
+            if 'female' in sample_name.lower():
+                female_gonad_samples.append(sample_name)
+            elif 'male' in sample_name.lower():
+                male_gonad_samples.append(sample_name)
+            else:
+                if not 'Gonad_Unknownsex' in to_collapse:
+                    to_collapse['Gonad_Unknownsex'] = []
+                to_collapse['Gonad_Unknownsex'].append(sample_name)
+        elif 'Female' in sample_name or 'Male' in sample_name:
             if 'Female' in sample_name:
                 generic_name, _ = sample_name.split('Female')
             elif 'Male' in sample_name:
@@ -317,22 +347,37 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
             to_collapse[generic_name].append(sample_name)
         else:
             not_collapse.append(sample_name)
-    
+    if len(male_gonad_samples) > 0:
+        to_collapse['Gonad_Male'] = male_gonad_samples
+    if len(female_gonad_samples) > 0:
+        to_collapse['Gonad_Female'] = female_gonad_samples
+    print(json.dumps(to_collapse, indent=4))
+    print(not_collapse)
     df = pd.DataFrame()
     for sample_name, serie in loaded_series.items():
         df[sample_name] = serie
     print(df.head())
+    print(df.columns)
+    for collumn in sorted([x for x in df.columns]):
+        print(collumn)
+        print(df[collumn].describe())
+        print()
+    
     no_sex_df = pd.DataFrame()
     for not_collapse_n in not_collapse:
         no_sex_df[not_collapse_n] = loaded_series[not_collapse_n]
     
     for sample_name, sex_specific_names in to_collapse.items():
         first = loaded_series[sex_specific_names[0]].copy()
-        if len(sex_specific_names) == 2:
-            other = loaded_series[sex_specific_names[1]]
-            first = first + other
+        if len(sex_specific_names) > 1:
+            next = 1
+            while next < len(sex_specific_names):
+                other = loaded_series[sex_specific_names[next]]
+                first = first + other
+                next += 1
         no_sex_df[sample_name] = first
     print(no_sex_df.head())
+    print(no_sex_df.columns)
 
     df.index.name = 'Name'
     no_sex_df.index.name = 'Name'
