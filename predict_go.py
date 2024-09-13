@@ -698,7 +698,7 @@ for conf in all_confs:
                     created += 1
             else:
                 print("No valid metrics for current confidence level")
-        print("Writing annotation file with all ontologies")
+    print("Writing annotation file with all ontologies")
     if len(output_files) > 1 and created > 1:
         lines = []
         ontos = set()

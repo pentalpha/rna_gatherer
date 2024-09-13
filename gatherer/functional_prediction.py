@@ -256,26 +256,11 @@ def leave_one_out(pid, coding_rows, regulators, method_ids, min_thresholds, retu
     #print(str(len(coding_noncoding_pairs)) + " correlation pairs found.")
     return_dict[pid] = coding_noncoding_pairs
 
-def try_find_coexpression_process(pid, coding_rows, nc_rows, method_ids, 
-    min_thresholds, return_dict):
-    minimum_coefs = min_thresholds
-
-    valid_metrics = []
-    for metric_name in method_ids:
-        if minimum_coefs[metric_name] != None:
-            valid_metrics.append(metric_name)
-    method_ids = valid_metrics
-
+def try_find_coexpression_process(pid, coding_rows, nc_rows, min_threshold, return_dict):
     coding_noncoding_pairs = []
 
-    methods = []
-    names = []
-    for method_name in method_ids:
-        methods.append(
-            metric_with_filter(
-                method_names[method_name],minimum_coefs[method_name],method_name))
-        #methods.append(method_names[method_name])
-    #print("Methods="+str(methods))
+    metric_func = lambda a,b: normal_filter(spr(a,b), min_threshold)
+
     iterator = range(len(coding_rows))
     if pid == 0:
         iterator = tqdm(range(len(coding_rows)))
@@ -284,11 +269,10 @@ def try_find_coexpression_process(pid, coding_rows, nc_rows, method_ids,
         reads1 = np.array(row1.values[1:],dtype=np.float32)
         for name, row2 in nc_rows.iterrows():
             reads2 = np.array(row2.values[1:],dtype=np.float32)
-            for i in range(len(method_ids)):
-                corr = methods[i](reads1,reads2)
-                if corr != None:
-                    coding_noncoding_pairs.append((row1[0], row2[0], corr, method_ids[i]))
-    #print(str(len(coding_noncoding_pairs)) + " correlation pairs found.")
+            corr = metric_func(reads1,reads2)
+            if corr != None:
+                coding_noncoding_pairs.append((row1[0], row2[0], corr, 'SPR'))
+    
     return_dict[pid] = coding_noncoding_pairs
 
 def get_ancestors(graph, parent_id):

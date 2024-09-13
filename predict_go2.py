@@ -18,12 +18,13 @@ from multiprocessing import Pool
 
 from gatherer.bioinfo import cov_id_from_minimap_line
 from gatherer.netutils import QuickGoRetriever
+from gatherer.go_predictor import GoPredictor
+from gatherer.util import chunks, runCommand
 
 '''
 Loading configurations and command line arguments
 '''
 from config import configs, require_files
-from gatherer.util import chunks, runCommand
 mandatory_files = ["go_obo"]
 require_files(mandatory_files)
 
@@ -232,14 +233,19 @@ def create_mrna_annotation(genome_path, parent_taxon_id, output_dir,
 def create_all_rnas_fasta(output_dir, ncrna_fasta_path, mrna_fasta_path):
     output_path = output_dir + '/coding_and_noncoding.fasta'
     output = open(output_path, 'w')
+    reading_nc = True
+    nc_names = []
     for f in [ncrna_fasta_path, mrna_fasta_path]:
         input_f = open(f, 'r')
         for line in input_f:
             if line.startswith(">"):
                 output.write(line.rstrip("\n")+'\n')
+                if reading_nc:
+                    nc_names.append(line.rstrip("\n").lstrip('>'))
             else:
                 output.write(line.rstrip("\n")+'\n')
         input_f.close()
+        reading_nc = False
     output.close()
 
     index_path = output_path+'.salmon_idx'
@@ -248,7 +254,8 @@ def create_all_rnas_fasta(output_dir, ncrna_fasta_path, mrna_fasta_path):
             '-i', index_path, '-k 31']
         print(index_cmd)
         runCommand(' '.join(index_cmd))
-    return output_path, index_path
+    
+    return output_path, index_path, nc_names
 
 def run_salmon(output_dir, index_path, fastqs_table, procs):
     samples = {}
@@ -386,7 +393,7 @@ def run_salmon(output_dir, index_path, fastqs_table, procs):
     df.to_csv(df_path, sep='\t')
     no_sex_df.to_csv(no_sex_df_path, sep='\t')
 
-    return df_path, no_sex_df
+    return df_path, no_sex_df_path
 
 def getArgs():
     ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -431,10 +438,12 @@ if __name__ == '__main__':
     protein_alignment_gff_path = protein_annot[1]
     protein_go_annotations_path = protein_annot[2]
 
-    all_rnas_fasta, all_rnas_index = create_all_rnas_fasta(output_dir, ncrna_fasta_path, 
+    all_rnas_fasta, all_rnas_index, nc_names = create_all_rnas_fasta(output_dir, ncrna_fasta_path, 
         mrna_fasta_path)
 
     count_reads_table1, count_reads_table2 = run_salmon(output_dir, all_rnas_index, 
         fastq_table_path, threads)
-
+    
+    predictor = GoPredictor(count_reads_table1, nc_names, protein_go_annotations_path, output_dir)
+    predictor.run_analysis()
     
