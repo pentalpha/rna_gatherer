@@ -44,7 +44,7 @@ class GoPredictor:
     #all_methods = ["MIC","DC","PRS","SPR","SOB","FSH"]
     all_ontologies = ["molecular_function","cellular_component","biological_process"]
     default_threads = max(2, multiprocessing.cpu_count()-1)
-    min_correlation = 0.9
+    min_correlation = 0.92
 
     """
     count_reads_path:       Count reads table path. TSV file with where the first column must be the gene names and the
@@ -72,7 +72,7 @@ class GoPredictor:
             processes = default_threads, threshold = min_correlation,
             k_min_coexpressions = 1, pvalue = 0.05, fdr = 0.05, min_m = 1, 
             min_M = 1, min_n = 1, cache_usage = 0.6, cache_size = None,
-            ontology_type = 'molecular_function'):
+            ontology_type = 'ALL'):
         self.coding_gene_ontology_path = coding_gene_ontology_path
         mandatory_files = ["go_obo"]
         require_files(mandatory_files)
@@ -99,6 +99,9 @@ class GoPredictor:
         self.pval = pvalue
         self.fdr = fdr
         self.K = k_min_coexpressions
+        self.min_M = min_M
+        self.min_n = min_n
+        self.min_m = min_m
 
         self.regulators_max_portion = 0.4
 
@@ -138,13 +141,16 @@ class GoPredictor:
         Looking for metrics not calculated yet.
         '''
 
-        self.correlation_file = self.correlations_dir+"/SPR.tsv"
-        delete_if_empty(self.correlation_file, min_cells=3, sep="\t")
+        #self.correlation_file = self.correlations_dir+"/SPR.tsv"
         self.tempDir = tempDir
+        self.all_correlatons_path = self.tempDir+"/correlated.tsv"
+        #delete_if_empty(self.all_correlatons_path, min_cells=3, sep="\t")
     
     def get_metric_file(self, metric_name):
         return open(self.correlations_dir + "/" + metric_name + ".tsv", 'a+')
     
+    
+
     def find_correlated(self, reads, regulators, tempDir, method_stream, threads):
         """Find coexpressed pairs using a set of metrics."""
         if len(reads) < threads*2:
@@ -200,56 +206,72 @@ class GoPredictor:
         manager.shutdown()
         del manager
 
+    def mutual_expression(vec1, vec2):
+        count = 0
+        for i in range(len(vec1)):
+            if vec1[i] > 1 and vec2[i] > 1:
+                count += 1
+        return count
+
+    def calc_correlations(self, regulator_chunk_index):
+        correlations = []
+        ncrna_count_reads = self.regulators_reads_v_chunks[regulator_chunk_index]
+        ncrna_names = self.regulators_reads_n_chunks[regulator_chunk_index]
+
+        iterator = tqdm(range(len(ncrna_names))) if regulator_chunk_index == 0 else range(len(ncrna_names))
+        for i in iterator:
+            correlations += [(ncrna_names[i], self.protein_reads_names[j], 
+                              spearmanr(ncrna_count_reads[i], self.protein_reads_values[j])[0],
+                              GoPredictor.mutual_expression(ncrna_count_reads[i], self.protein_reads_values[j]))
+                for j in range(len(self.protein_reads_values))]
+        
+        correlations = [(a, b, corr, mutual_samples) for a, b, corr, mutual_samples in correlations if corr >= 0.8]
+        print('Finished chunk', regulator_chunk_index)
+        return correlations
+    
     def calc_correlation_file(self):
         print("Calculating correlation coefficients")
         print("Separating regulators from regulated.")
         print("\tRegulator IDs: " + str(len(self.regulators)))
-        mask = self.reads[self.reads.columns[0]].isin(self.regulators)
+        names_column = self.reads.columns[0]
+        columns = [x for x in self.reads.columns if x != names_column]
+        mask = self.reads[names_column].isin(self.regulators)
         regulators_reads = self.reads.loc[mask]
         print("\tRegulator IDs in dataframe: " 
             + str(len(regulators_reads[regulators_reads.columns[0]].tolist())))
         non_regulators_reads = self.reads.loc[~mask]
 
-        print(str(len(non_regulators_reads)) + " regulated.")
-        print(str(len(regulators_reads)) + " regulators.")
-        
-        available_size = self.available_cache
+        print(str(len(non_regulators_reads)) + " regulated")
+        print(str(len(regulators_reads)) + " regulators")
 
-        '''
-        Split the table into cache-sized smaller parts.
-        '''
-        max_for_regulators = available_size*self.regulators_max_portion
-        #print("Available for regulators: " + str(int(max_for_regulators/1024)) + "KB")
-        #regs_size = getsizeof(regulators_reads)
-        #print("Regulators size: " + str(int(regs_size/1024)) + "KB")
-        #regulator_dfs = [regulators_reads]
-        print("Dividing regulator rows:")
-        regulator_dfs = split_df_to_max_mem(regulators_reads, max_for_regulators)
-        available_size -= getsizeof(regulator_dfs[0])
-        print("Dividing non-regulator rows:")
-        dfs = split_df_to_max_mem(non_regulators_reads, available_size)
-        
-        '''print("Chunks for regulated: " + str(len(dfs)) 
-        + "\nChunks for regulators: " + str(len(regulator_dfs)))'''
+        regulators_reads_values = regulators_reads[columns].values
+        regulators_reads_names = regulators_reads[names_column].tolist()
 
-        df_pairs = []
-        for df in dfs:
-            for regulator_df in regulator_dfs:
-                df_pairs.append((df,regulator_df))
+        self.protein_reads_values = non_regulators_reads[columns].values
+        self.protein_reads_names = non_regulators_reads[names_column].tolist()
 
-        
-        method_stream = self.get_metric_file('SPR')
+        #self.protein_reads_values = self.protein_reads_values[:10]
+        #self.protein_reads_names = self.protein_reads_names[:10]
 
-        '''
-        Calculate the correlations for each part of the table
-        '''
-        i = 1
-        for df,regulator_df in tqdm(df_pairs):
-            self.find_correlated(df, regulators_reads, self.tempDir, 
-                        method_stream, self.threads)
-            i += 1
+        assert len(regulators_reads_values) == len(regulators_reads_names)
+        n_procs = int(self.threads*0.9)
+        chunk_size = int(len(regulators_reads_names) / (self.threads*3))
+        self.regulators_reads_v_chunks = list(chunks(regulators_reads_values, chunk_size))
+        self.regulators_reads_n_chunks = list(chunks(regulators_reads_names, chunk_size))
+
+        regulator_chunk_indexes = list(range(len(self.regulators_reads_n_chunks)))
+        correlations = []
+        with multiprocessing.Pool(n_procs) as pool:
+            print('Using', n_procs, 'for', len(regulator_chunk_indexes), 'chunks')
+            correlation_lists = pool.map(self.calc_correlations, regulator_chunk_indexes)
+            for l in correlation_lists:
+                correlations += l
         
+        method_stream = open(self.all_correlatons_path, 'w')
+        for coding_name, noncoding_name, corr, mutual_samples in correlations:
+            method_stream.write("\t".join([coding_name, noncoding_name, str(corr), str(mutual_samples)]) + "\n")
         method_stream.close()
+        
     
     def predict(self, ontology_type="molecular_function"):
         """Predict functions based on the loaded correlation coefficients."""
@@ -421,7 +443,7 @@ class GoPredictor:
         '''
         Calculate any missing metrics
         '''
-        if not os.path.exists(self.correlation_file):
+        if not os.path.exists(self.all_correlatons_path):
             self.calc_correlation_file()
 
         self.coding_genes = {}
@@ -431,24 +453,25 @@ class GoPredictor:
         '''
         Load correlation coefficients from the files where they are stored.
         '''
-        print("Loading correlations from " + self.correlation_file + ".")
+        print("Loading correlations from " + self.all_correlatons_path + ".")
         min_value = self.min_threshold_SPR
         load_condition = lambda x: x >= min_value
         
-        with open(self.correlation_file,'r') as stream:
+        with open(self.all_correlatons_path,'r') as stream:
             lines = 0
             invalid_lines = 0
             loaded = 0
             for raw_line in stream.readlines():
                 cells = raw_line.rstrip("\n").split("\t")
-                if len(cells) == 3:
-                    gene = cells[0]
-                    rna = cells[1]
+                if len(cells) == 4:
+                    rna = cells[0]
+                    gene = cells[1].split('|')[1]
                     corr = cells[2]
+                    mutual_cols = int(cells[3])
                     corr_val = float(corr)
                     
                     #if corr_val >= min_value:
-                    if load_condition(corr_val):
+                    if corr_val >= min_value and mutual_cols >= 4:
                         if not gene in self.coding_genes:
                             self.coding_genes[gene] = 0
                         self.coding_genes[gene] += 1
@@ -472,7 +495,7 @@ class GoPredictor:
                     + " lines without proper number of columns (4 columns)")
                 print(str(loaded), "total correlations loaded from file")
         print("correlation_values = "+str(len(self.correlation_values.keys())))
-        print("genes_coexpressed_with_ncRNA = "+str(len(self.genes_coexpressed_with_ncRNA.keys())))
+        print("ncRNAs with coexpressed coding genes = "+str(len(self.genes_coexpressed_with_ncRNA.keys())))
         print("coding_genes = "+str(len(self.coding_genes.keys())))
         self.N = len(self.reads)
 
@@ -491,8 +514,8 @@ class GoPredictor:
                 cells = raw_line.rstrip("\n").split("\t")
                 if len(cells) == 3 or len(cells) == 4:
                     gene = cells[0]
-                    go = cells[1]
-                    onto = cells[2]
+                    go = cells[2]
+                    onto = cells[3]
                     if onto in self.onto_id2gos.keys():
                         id2gos = self.onto_id2gos[onto]
                         genes_annotated_with_term = self.onto_genes_annotated_with_term[onto]
@@ -508,8 +531,9 @@ class GoPredictor:
                             genes_annotated_with_term[go].add(gene)
                             associations += 1
                         else:
-                            invalid_lines += 1
-                            print("Invalid coding gene" + gene)
+                            #invalid_lines += 1
+                            #print("Invalid coding gene" + gene)
+                            pass
                     else:
                         invalid_lines += 1
                 else:

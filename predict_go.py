@@ -1,38 +1,26 @@
-"""Function predictor for lncRNA that uses gene coexpression.
-
-This script is used to apply statistics in order to figure out
-possible Gene Ontology terms for lncRNAs, based on gene 
-expression counts and an annotation for coding genes. The gene
-expression is read from a counts table (see test_data/counts)
-and the expression of lncRNA and coding genes is compared
-by calculating correlation coefficients through several
-differente metrics. The pairs of (lncRNA,gene) with 
-coefficients passing the required minimum value to be 
-considered inside the confidence level are taken as
-coexpressed.
-The associations between coding genes and GO terms in the 
-functional annotation (see test_data/annotation) of the
-coding genes are passed as possible associations for their
-lncRNA coexpressed pairs. Statistical tests are used to filter
-which of these possible associations are statistically
-relevant, calculating P-Values and FDRs.
-The associations passing the filtering are grouped together in
-a output file, the functional prediction.
+"""
 
 Author: Pitágoras Alves (github.com/pentalpha)
 """
 
-import sys
-from gatherer.functional_prediction import *
-from gatherer.util import *
-from gatherer.confidence_levels import *
-from gatherer.bioinfo import short_ontology_name, long_ontology_name
-import obonet
-import networkx
-import numpy as np
+import gzip
+import json
+from math import ceil
+import random
 import argparse
 import multiprocessing
-import json
+import pandas as pd
+import gffutils
+import pyfaidx
+from tqdm import tqdm
+from os import path, mkdir
+from multiprocessing import Pool
+
+from gatherer.bioinfo import cov_id_from_minimap_line
+from gatherer.netutils import QuickGoRetriever
+from gatherer.go_predictor import GoPredictor
+from gatherer.util import chunks, runCommand
+
 '''
 Loading configurations and command line arguments
 '''
@@ -45,681 +33,417 @@ confs = {}
 for conf in configs:
     confs[conf] = configs[conf]
 
-available_species = get_available_species()
+def create_mrna_annotation(genome_path, parent_taxon_id, output_dir, 
+        threads, min_coverage, min_identity):
+    
+    output_proteins = path.join(output_dir, 'proteins.fasta.gz')
+    if not path.exists(output_proteins):
+        cmd = "wget -O OUTPUT https://rest.uniprot.org/uniprotkb/stream\?compressed\=true\&format\=fasta\&includeIsoform\=true\&query\=%28%28taxonomy_id%3A27723%29%29"
+        cmd = cmd.replace('27723', parent_taxon_id).replace('OUTPUT', output_proteins)
+        runCommand(cmd)
 
-display_cache = get_cache()
+    protein_list = []
+    for rawline in gzip.open(output_proteins, 'rt'):
+        if rawline.startswith('>'):
+            protein_list.append(rawline.lstrip('>').split('|')[1])
+    
+    proteins_downloaded_path = path.join(output_dir, 'proteins.txt')
+    open(proteins_downloaded_path, 'w').write("\n".join(protein_list))
 
-all_methods = ["MIC","DC","PRS","SPR","SOB","FSH"]
-all_ontologies = ["molecular_function","cellular_component","biological_process"]
-#default_methods = load_metrics(confs["metrics_table"])
-#highest_confidence = str(max([int(conf) for conf in default_methods.keys()]))
+    mpi_db_path = genome_path.replace('.fasta', '.mpi')
+    if not path.exists(mpi_db_path):
+        miniprot_cmd = [
+            confs['miniprot'], '-t8', '-d', mpi_db_path, genome_path
+        ]
+        code = runCommand(' '.join(miniprot_cmd))
+
+    annotations_path = path.join(output_dir, 'annotations.tsv')
+    #protein_list = protein_list[:700]
+    annotations_paths = []
+    if not path.exists(annotations_path):
+        attempts = 3
+        for i in range(1, attempts+1):
+            waittime = i
+            chunk_size = int(240 / i)
+            random.shuffle(protein_list)
+            id_chunks = list(chunks(protein_list, chunk_size))
+            
+            print(len(protein_list), 'proteins divided into', len(id_chunks), 'chunks')
+            quickgo_retriever = QuickGoRetriever('https://www.ebi.ac.uk/QuickGO/services/annotation/downloadSearch', 
+                parent_taxon_id, waittime)
+            annotation_lines = []
+            annotation_attempt_path = path.join(output_dir, 'annotations_'+str(i)+'.tsv')
+            with multiprocessing.Pool(3) as pool:
+                annotation_chunks = pool.map(quickgo_retriever.retrieve_quickgo_prot_annotations, id_chunks)
+                
+                annotations_file = open(annotation_attempt_path, 'w')
+                for chunk in annotation_chunks:
+                    for line in chunk:
+                        rawline = '\t'.join(line)+'\n'
+                        annotations_file.write(rawline)
+                annotations_file.close()
+                annotations_paths.append(annotation_attempt_path)
+
+        annotations = set()
+        for p in annotations_paths:
+            for rawline in open(p, 'r'):
+                cells = rawline.rstrip('\n').split('\t')
+                if len(cells) == 4:
+                    annotations.add((cells[0], cells[1], cells[2], cells[3]))
+            print(len(annotations), 'protein annotations loaded')
+        annotations = sorted(annotations)
+        single_ann_output = open(annotations_path, 'w')
+        #single_ann_output.write('uniprot\ttaxon\tgo\taspect\n')
+        for cells in annotations:
+            single_ann_output.write('\t'.join(cells)+'\n')
+        single_ann_output.close()
+    
+    annotations = pd.read_csv(annotations_path, sep='\t', header=None)
+    annotations.rename(columns={0 :'uniprot', 1: 'taxon', 2: 'go', 3: 'aspect'}, 
+        inplace=True)
+    print(len(annotations), 'protein annotations loaded')
+    print(annotations.head())
+    annotated_proteins = set(annotations['uniprot'].tolist())
+    ann_proteins_path = path.join(output_dir, 'annotated_proteins.txt')
+    open(ann_proteins_path, 'w').write("\n".join(annotated_proteins))
+
+    annotated_proteins_fasta = path.join(output_dir, 'annotated_proteins.fasta')
+    if not path.exists(annotated_proteins_fasta):
+        print_protein = False
+        annotated_proteins_fasta_file = open(annotated_proteins_fasta, 'w')
+        for rawline in gzip.open(output_proteins, 'rt'):
+            if rawline.startswith('>'):
+                protid = rawline.lstrip('>').rstrip('\n').split('|')[1]
+                print_protein = protid in annotated_proteins
+            if print_protein:
+                annotated_proteins_fasta_file.write(rawline)
+        annotated_proteins_fasta_file.close()
+
+    protein_alignment_path = path.join(output_dir, 'annotated_proteins.gff')
+    if not path.exists(protein_alignment_path):
+        miniprot_cmd2 = [
+            confs['miniprot'], '-t', str(int(threads/2)), 
+            '--gff', genome_path,
+            annotated_proteins_fasta, '>', protein_alignment_path
+        ]
+        code = runCommand(' '.join(miniprot_cmd2))
+
+    protein_alignment_filtered_path = path.join(output_dir, 'annotated_proteins.filtered.gff')
+    paf_id = None
+    paf_cov = None
+
+    protein_alignment_filtered_file = open(protein_alignment_filtered_path, 'w')
+    mRNA_count = 0
+    mRNA_kept = 0
+    mRNA_small_cov = 0
+    mRNA_small_id = 0
+    last_mrna_kept = False
+    for rawline in open(protein_alignment_path, 'r'):
+        
+        if rawline.startswith('##PAF\t'):
+            rawline = rawline.replace('##PAF\t', '')
+            cells = rawline.rstrip('\n').split('\t')
+            paf_cov, paf_id = cov_id_from_minimap_line(cells)
+        else:
+            cells = rawline.rstrip('\n').split('\t')
+            if len(cells) >= 9:
+                if cells[2] == 'mRNA':
+                    mRNA_count += 1
+                    if paf_cov and paf_id:
+                        cells[8] = ('PAFIdentity='+str(round(paf_id, 4))
+                                    +';PAFCoverage='+str(round(paf_cov, 4))
+                                    +';'+cells[8])
+                    info_fields = {part.split('=')[0]: part.split('=')[1] for part in cells[8].split(';')}
+                    if (float(info_fields['Identity']) >= min_identity
+                        and float(info_fields['PAFCoverage']) >= min_coverage):
+                        protein_alignment_filtered_file.write('\t'.join(cells)+'\n')
+                        mRNA_kept += 1
+                        last_mrna_kept = True
+
+                    elif float(info_fields['Identity']) < min_identity:
+                        mRNA_small_id += 1
+                        last_mrna_kept = False
+                    elif float(info_fields['PAFCoverage']) < min_coverage:
+                        mRNA_small_cov += 1
+                        last_mrna_kept = False
+                    else:
+                        last_mrna_kept = False
+                else:
+                    if last_mrna_kept:
+                        protein_alignment_filtered_file.write(rawline)
+            else:
+                protein_alignment_filtered_file.write(rawline)
+
+            paf_cov = None
+            paf_id = None
+    protein_alignment_filtered_file.close()
+    
+    print('mRNA_count', mRNA_count)
+    print('mRNA_kept', mRNA_kept)
+    print('mRNA_kept/mRNA_count', mRNA_kept/mRNA_count)
+    print('mRNA_small_id', mRNA_small_id)
+    print('mRNA_small_cov', mRNA_small_cov)
+
+    protein_alignment_filtered_fasta_path = path.join(output_dir, 
+        'annotated_proteins.filtered.mRNA.fasta')
+    if not path.exists(protein_alignment_filtered_fasta_path):
+        print('Loading', protein_alignment_filtered_path)
+        db = gffutils.create_db(protein_alignment_filtered_path, 
+            protein_alignment_filtered_path+'.db', 
+            force=True, )
+        print('Loading', genome_path)
+        fasta = pyfaidx.Fasta(genome_path)
+        print('Loaded inputs, creating', protein_alignment_filtered_fasta_path)
+
+        print('Collecting mRNA names')
+        cds_by_parent = {}
+        parent_to_protein_name = {}
+        targets = set()
+        for mRNA in tqdm(db.features_of_type('mRNA', order_by='start')):
+            target = mRNA.attributes['Target'][0]
+            targets.add(target.split(' ')[0])
+            mrna_id = mRNA.attributes['ID'][0]
+            #print(mrna_id, target)
+            parent_to_protein_name[mrna_id] = target
+            cds_by_parent[mrna_id] = ''
+        
+        print('Collecting cds sequences')
+        for cds in tqdm(db.features_of_type('CDS', order_by='start')):
+            cds_parent = cds.attributes['Parent'][0]
+            cds_seq = cds.sequence(fasta)
+            if cds_parent in cds_by_parent:
+                cds_by_parent[cds_parent] += cds_seq
+        
+        print('Writing mRNA sequences')
+        fasta_output = open(protein_alignment_filtered_fasta_path, 'w')
+        for mrna_id, protein_name in parent_to_protein_name.items():
+            coding_sequence = cds_by_parent[mrna_id]
+            fasta_output.write('>'+protein_name+' '+mrna_id+'\n')
+            fasta_output.write(coding_sequence+'\n')
+        
+        fasta_output.close()
+
+        print(len(parent_to_protein_name.keys()), 'mRNAs writen')
+        print('Of', len(targets), 'proteins')
+    
+    return (protein_alignment_filtered_fasta_path, 
+        protein_alignment_filtered_path,
+        annotations_path)
+
+def create_all_rnas_fasta(output_dir, ncrna_fasta_path, mrna_fasta_path):
+    output_path = output_dir + '/coding_and_noncoding.fasta'
+    output = open(output_path, 'w')
+    reading_nc = True
+    nc_names = []
+    for f in [ncrna_fasta_path, mrna_fasta_path]:
+        input_f = open(f, 'r')
+        for line in input_f:
+            if line.startswith(">"):
+                output.write(line.rstrip("\n")+'\n')
+                if reading_nc:
+                    nc_names.append(line.rstrip("\n").lstrip('>'))
+            else:
+                output.write(line.rstrip("\n")+'\n')
+        input_f.close()
+        reading_nc = False
+    output.close()
+
+    index_path = output_path+'.salmon_idx'
+    if not path.exists(index_path):
+        index_cmd = ['salmon', 'index', '-t', output_path, 
+            '-i', index_path, '-k 31']
+        print(index_cmd)
+        runCommand(' '.join(index_cmd))
+    
+    return output_path, index_path, nc_names
+
+def run_salmon(output_dir, index_path, fastqs_table, procs):
+    samples = {}
+    fastqs_dir = path.dirname(fastqs_table)
+    for rawline in open(fastqs_table, 'r'):
+        cells = rawline.rstrip('\n').split('\t')
+        if len(cells) == 2:
+            gname = cells[0]
+            fastqs = [fastqs_dir+'/'+x for x in cells[1].split(',')]
+            samples[gname] = fastqs
+            print(gname, samples[gname])
+        else:
+            print('not two columns:')
+            print(rawline)
+            quit(1)
+    
+    salmon_quant_dir = output_dir + '/salmon_quant'
+    if not path.exists(salmon_quant_dir):
+        mkdir(salmon_quant_dir)
+    salmon_results = {}
+    print('Running salmon quant for samples')
+    salmon_cmds = []
+    parallel_salmons = 3
+    threads_per_salmon = ceil(procs/parallel_salmons)
+    for sample_name, fastqs in tqdm(samples.items()):
+        print(sample_name)
+        #salmon quant -i transcripts_index -l <LIBTYPE> -1 reads1.fq -2 reads2.fq -o transcripts_quant
+        sample_quant_dir = salmon_quant_dir+'/'+sample_name
+        sample_quant_file = sample_quant_dir+'/quant.sf'
+        stdout_path = sample_quant_dir+'.stdout'
+        stderr_path = sample_quant_dir+'.stderr'
+        if not path.exists(sample_quant_file):
+            if len(fastqs) == 2:
+                fastqs_str = '-1 ' + fastqs[0] + ' -2 ' +fastqs[1]
+                lib_type = '-l IU'
+            else:
+                fastqs_str = '-r ' + fastqs[0]
+                #lib_type = '-l SF'
+                lib_type = '-l U'
+            quant_cmd = ['salmon', 'quant', '-i', index_path, lib_type, 
+                        fastqs_str, '-o', sample_quant_dir,
+                        '-p', str(threads_per_salmon), '2>'+stderr_path, 
+                        '1>'+stdout_path]
+            #print(quant_cmd)
+            #runCommand(' '.join(quant_cmd))
+            salmon_cmds.append(' '.join(quant_cmd))
+        else:
+            print(sample_quant_file, 'already created')
+        salmon_results[sample_name] = sample_quant_file
+    
+    if len(salmon_cmds) > 0:
+        print('Running salmon quant for', len(salmon_cmds), 'samples')
+        with Pool(parallel_salmons) as pool:
+            pool.map(runCommand, salmon_cmds)
+    
+    print('Loading salmon TPM counts')
+    loaded_series = {}
+    to_collapse = {}
+    not_collapse = []
+    male_gonad_samples = []
+    female_gonad_samples = []
+    for sample_name, sample_quant_file in salmon_results.items():
+        input = open(sample_quant_file, 'r')
+        header = input.readline()
+        data = []
+        index = []
+        for rawline in input:
+            cells = rawline.rstrip('\n').split('\t')
+            seqid = cells[0]
+            tpm = float(cells[3])
+            index.append(seqid)
+            data.append(tpm)
+        if max(data) < 1:
+            print(sample_quant_file, 'has zero tpm counts higher than zero')
+            quit(1)
+        loaded_series[sample_name] = pd.Series(data=data, index=index)
+
+        if 'gonad' in sample_name.lower():
+            if 'female' in sample_name.lower():
+                female_gonad_samples.append(sample_name)
+            elif 'male' in sample_name.lower():
+                male_gonad_samples.append(sample_name)
+            else:
+                if not 'Gonad_Unknownsex' in to_collapse:
+                    to_collapse['Gonad_Unknownsex'] = []
+                to_collapse['Gonad_Unknownsex'].append(sample_name)
+        elif 'Female' in sample_name or 'Male' in sample_name:
+            if 'Female' in sample_name:
+                generic_name, _ = sample_name.split('Female')
+            elif 'Male' in sample_name:
+                generic_name, _ = sample_name.split('Male')
+            generic_name = generic_name.rstrip('_')
+            
+            if not generic_name in to_collapse:
+                to_collapse[generic_name] = []
+            to_collapse[generic_name].append(sample_name)
+        else:
+            not_collapse.append(sample_name)
+    if len(male_gonad_samples) > 0:
+        to_collapse['Gonad_Male'] = male_gonad_samples
+    if len(female_gonad_samples) > 0:
+        to_collapse['Gonad_Female'] = female_gonad_samples
+    print(json.dumps(to_collapse, indent=4))
+    print(not_collapse)
+    df = pd.DataFrame()
+    for sample_name, serie in loaded_series.items():
+        df[sample_name] = serie
+    print(df.head())
+    print(df.columns)
+    for collumn in sorted([x for x in df.columns]):
+        print(collumn)
+        print(df[collumn].describe())
+        print()
+    
+    no_sex_df = pd.DataFrame()
+    for not_collapse_n in not_collapse:
+        no_sex_df[not_collapse_n] = loaded_series[not_collapse_n]
+    
+    for sample_name, sex_specific_names in to_collapse.items():
+        first = loaded_series[sex_specific_names[0]].copy()
+        if len(sex_specific_names) > 1:
+            next = 1
+            while next < len(sex_specific_names):
+                other = loaded_series[sex_specific_names[next]]
+                first = first + other
+                next += 1
+        no_sex_df[sample_name] = first
+    print(no_sex_df.head())
+    print(no_sex_df.columns)
+
+    df.index.name = 'Name'
+    no_sex_df.index.name = 'Name'
+    df_path = output_dir + '/samples_tpm.tsv'
+    no_sex_df_path = output_dir + '/samples_tpm-nosex.tsv'
+    df.to_csv(df_path, sep='\t')
+    no_sex_df.to_csv(no_sex_df_path, sep='\t')
+
+    return df_path, no_sex_df_path
 
 def getArgs():
     ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-cr", "--count-reads", required=True,
-        help=("Count reads table path. TSV file with where the first column must be the gene names and the " +
-            " following columns are the FPKM normalized counts of each sample."))
-    ap.add_argument("-reg", "--regulators", required=True,
-        help=("A list of regulators, where each line contains the name of one gene."))
-    ap.add_argument("-ann", "--annotation", required=True,
-        help=("Functional annotation file of the genes."))
+    ap.add_argument("-txid", "--taxon-id", required=True,
+        help=("Base taxon to download protein sequences and annotations"))
+    ap.add_argument("-g", "--genome", required=True,
+        help=("Path to genome fasta"))
+    ap.add_argument("-nc", "--nc-rna-fasta", required=True,
+        help=("Path to fasta file with ncRNA sequences"))
+    ap.add_argument("-fq", "--fastq-table", required=True,
+        help=("Path to .TSV file where first column is the tissue name and"
+              +" second column is a ',' separated list of .fastq.gz files."))
     ap.add_argument("-o", "--output-dir", required=True, help=("Output directory."))
-    ap.add_argument("-conf", "--confidence-level", required=False, 
-    help=("Overwrites 'quality'. Level of confidence in the correlation metrics. Values: 0 to 24."))
-    ap.add_argument("-ont", "--ontology-type", required=False,
-        default="molecular_function", help=("One of the following: molecular_function (default),"
-        +" cellular_component or biological_process."))
-    ap.add_argument("-q", "--quality", help=("'normal': normal precision, more predictions."
-        + " 'high': high precision, very few predictions. Default=high."))
-    '''ap.add_argument("-met", "--method", required=False,
-        default=None, help=("Correlation coefficient calculation method:"
-        +" MIC (Maximal Information Coefficient), "
-        +"DC (Distance Correlation), SPR (Spearman Coefficient), PRS (Pearson Coefficient), "
-        +"FSH (Fisher Information Metric) or SOB (Sobolev Metric)."
-        +"\nRNA Gatherer is configured to use the best method combination for each ontology and "
-        +"confidence level, if you set this option the defaults will be overwriten."))'''
-    ap.add_argument("-bh", "--benchmarking", required=False,
-        default=False, help=("Enables the (much slower) leave one out strategy: regulators can be regulated too."
-        +"Default: False."))
+    ap.add_argument("-cov", "--coverage", required=True, help=("Minimum protein coverage"))
+    ap.add_argument("-id", "--identity", required=True, help=("Minimum protein identity"))
+    
     default_threads = max(2, multiprocessing.cpu_count()-1)
     ap.add_argument("-p", "--processes", required=False,
         default=default_threads, help=("CPUs to use. Default: " + str(default_threads)+"."))
-    ap.add_argument("-md", "--model-species", required=False,
-        default="mus_musculus", help=("Model organism used to calculate confidence levels: "
-        + ",".join(available_species)) + ". Default: mus_musculus.")
-    ap.add_argument("-th", "--threshold", required=False,
-        default=None, help=("Sets an unique correlation coefficient threshold for all methods: 0.5 <= x <= 0.99."))
-    ap.add_argument("-K", "--k-min-coexpressions", required=False,
-        default=1, help=("The minimum number of ncRNAs a Coding Gene must be coexpressed with."
-                        +" Increasing the value improves accuracy of functional assignments, but"
-                        +" may restrict the results. Default: 1."))
-    ap.add_argument("-pv", "--pvalue", required=False,
-        default=0.05, help=("Maximum pvalue. Default: 0.05"))
-    ap.add_argument("-fdr", "--fdr", required=False,
-        default=0.05, help=("Maximum FDR. Default: 0.05"))
-    ap.add_argument("-m", "--min-m", required=False,
-        default=1, help=("Minimum m value. Default: 1"))
-    ap.add_argument("-M", "--min-M", required=False,
-        default=1, help=("Minimum M value. Default: 1"))
-    ap.add_argument("-n", "--min-n", required=False,
-        default=1, help=("Minimum n value. Default: 1"))
-
-    ap.add_argument("-chu", "--cache-usage", required=False,
-        default=0.6, help=("Portion of the cache memory to use for storing the counts table."))
-    ap.add_argument("-ch", "--cache-size", required=False,
-        default=display_cache, help=("Sets the size of the cache memory. Default: auto-detection of CPU cache size."))
+    
     return vars(ap.parse_args())
 
-cmdArgs = getArgs()
-count_reads_path = cmdArgs["count_reads"]
-regulators_path = cmdArgs["regulators"]
-coding_gene_ontology_path = cmdArgs["annotation"]
-tempDir = cmdArgs["output_dir"]
-go_path = confs["go_obo"]
+if __name__ == '__main__':
+    cmdArgs = getArgs()
+    genome_path = cmdArgs["genome"]
+    parent_taxon_id = cmdArgs["taxon_id"]
+    output_dir = cmdArgs["output_dir"]
+    go_path = confs["go_obo"]
+    threads = int(cmdArgs["processes"])
+    min_coverage = float(cmdArgs["coverage"])
+    min_identity = float(cmdArgs["identity"])
+    fastq_table_path = cmdArgs['fastq_table']
+    ncrna_fasta_path = cmdArgs['nc_rna_fasta']
+    if not path.exists(output_dir):
+        mkdir(output_dir)
 
-ontology_types_arg = cmdArgs["ontology_type"].split(",")
-if ontology_types_arg[0] == "ALL":
-    ontology_types_arg = all_ontologies
-
-benchmarking = cmdArgs["benchmarking"]
-threads = int(cmdArgs["processes"])
-
-cache_usage = float(cmdArgs["cache_usage"])
-available_cache = get_cache(usage=cache_usage)
-if "cache_size" in cmdArgs:
-    available_cache = int(int(cmdArgs["cache_size"]) * cache_usage)
-print("Available cache memory: " + str(int(available_cache/1024)) + "KB")
-
-model_name = cmdArgs["model_species"]
-if not model_name in available_species:
-    print(model_name + " is not a valid model species.")
-    print("Available species are: " + str(available_species))
-    quit()
-
-print("Loading confidence levels for " + model_name)
-confidence_thresholds = load_confidence_levels(model_name)
-default_methods = get_best_metrics(model_name)
-conf_presets = get_preset_confs(model_name)
-confidence_levels = conf_presets['high']
-if "quality" in cmdArgs:
-    if cmdArgs["quality"] == "normal":
-        confidence_levels = conf_presets['normal']
-    elif cmdArgs["quality"] != "high":
-        print("Invalid quality preset. Valid values: " + str(list(conf_presets.keys())))
-elif "confidence_level" in cmdArgs:
-    print("Loading custom confidence levels.")
-    for onto in all_ontologies:
-        confidence_levels[onto] = [int(x) for x in cmdArgs["confidence_level"].split(",")]
-print("Confidence levels used:", confidence_levels)
-
-for onto in all_ontologies:
-    vals = confidence_levels[onto]
-    if not isinstance(vals, list):
-        confidence_levels[onto] = [vals]
-
-if cmdArgs["threshold"] != None:
-    universal_th = float(cmdArgs["threshold"])
-    #print(str(len(confidence_thresholds)))
-    #print(str(confidence_levels))
-    for onto, confs in confidence_levels:
-        for i in confs:
-            for metric in confidence_thresholds[onto][i].keys():
-                confidence_thresholds[onto][i][metric] = universal_th
-
-min_confidence = min([min(confs) for onto, confs in confidence_levels.items()])
-print("Min confidence:", min_confidence)
-#min_confidence = confidence_levels[0]
-'''min_thresholds_by_onto = {onto: confs[min_confidence] 
-                        for onto, confs in confidence_thresholds.items()}'''
-min_thresholds_by_onto = {onto: confs[confidence_levels[long_ontology_name(onto)][0]] 
-                        for onto, confs in confidence_thresholds.items()}
-print(str(min_thresholds_by_onto))
-
-min_thresholds = {}
-for metric in min_thresholds_by_onto["MF"].keys():
-    values = [mins[metric] 
-                for onto, mins in min_thresholds_by_onto.items() 
-                if mins[metric] is not None]
-    if len(values) > 0:
-        if metric == "SOB" or metric == "FSH":
-            min_thresholds[metric] = max(values)
-        else:
-            min_thresholds[metric] = min(values)
-    else:
-        min_thresholds[metric] = None
-
-print("Minimum thresholds to load correlations:")
-print(str(min_thresholds))
-
-'''if cmdArgs["method"] != None:
-    new_metrics = {}
-    method = cmdArgs["method"].split(",")
-    if method[0] == "ALL":
-        method = all_methods
-
-    metrics_with_minimum_conf = set(method)
-    for metric_name in method:
-        if min_thresholds[metric_name] == None:
-            metrics_with_minimum_conf.remove(metric_name)
-            print(metric_name + " does not have the minimum confidence level for " 
-                + onto + ", not using it.")
-    method = list(metrics_with_minimum_conf)
-
-    for onto, conf in confidence_levels:
-        new_metrics[str(conf)] = {o: method for o in all_ontologies}    
-    default_methods = new_metrics'''
-
-metrics_used = set()
-for onto, confs in confidence_levels.items():
-    print(onto, confs)
-    if onto in ontology_types_arg:
-        print("using this ontology")
-        for conf, metrics_by_onto in default_methods.items():
-            print("\t",conf,metrics_by_onto)
-            if int(conf) in confs:
-                print("\t\tusing")
-                metrics_used.update(metrics_by_onto[onto])
-            else:
-                print("\t\tnot using")
-    else:
-        print("not using this ontology")
-'''if int(conf) >= min_confidence:
-        for onto, metrics in metrics_by_onto.items():
-            if onto in ontology_types_arg:
-                metrics_used.update(metrics)'''
-print("Metrics used:", metrics_used)
-pval = float(cmdArgs["pvalue"])
-fdr = float(cmdArgs["fdr"])
-min_n = int(cmdArgs["min_n"])
-min_M = int(cmdArgs["min_M"])
-min_m = int(cmdArgs["min_m"])
-K = int(cmdArgs["k_min_coexpressions"])
-
-regulators_max_portion = 0.4
-
-'''
-Creating output directory
-'''
-
-if not os.path.exists(tempDir):
-    os.mkdir(tempDir)
-
-correlations_dir = tempDir + "/correlations"
-if not os.path.exists(correlations_dir):
-    os.mkdir(correlations_dir)
-
-def get_metric_file(metric_name):
-    return open(correlations_dir + "/" + metric_name + ".tsv", 'a+')
-
-def find_correlated(reads, regulators, tempDir, methods, method_streams, threads, separate_regulators = False):
-    """Find coexpressed pairs using a set of metrics."""
-    if len(reads) < threads*2:
-        threads = len(reads)/2
-    coding_noncoding_pairs = []
-    func = try_find_coexpression_process
-    if separate_regulators:
-        print("Running 'leave one out' (benchmarking) mode.")
-        func = leave_one_out
-    genes_per_process = int(len(reads) / threads)
+    protein_annot = create_mrna_annotation(genome_path, 
+        parent_taxon_id, output_dir, threads, min_coverage, 
+        min_identity)
     
-    limit = len(reads)-1
-    end = 0
-    last = -1
-    manager = multiprocessing.Manager()
-    return_dict = manager.dict()
-    processes = []
-    last_pid = 0
-    print('Spawning', threads, 'threads')
-    for i in range(threads-1):
-        start = last+1
-        end = start + genes_per_process
-        if end >= limit:
-            end = limit
-        parcial_df = reads.iloc[start:end]
-        p = multiprocessing.Process(target=func, 
-            args=(i, parcial_df, regulators, methods, min_thresholds, return_dict, ))
-        processes.append(p)
-        print("Spawned process from gene " + str(start) + " to " + str(end))
-        p.start()
-        last = end
+    mrna_fasta_path = protein_annot[0]
+    protein_alignment_gff_path = protein_annot[1]
+    protein_go_annotations_path = protein_annot[2]
 
-        last_pid = i
-        if end == limit:
-            break
-    if end < limit:
-        parcial_df = reads.iloc[end:limit]
-        p = multiprocessing.Process(target=func, 
-            args=(last_pid+1, parcial_df, regulators, methods, min_thresholds, return_dict, ))
-        processes.append(p)
-        print("Spawned process from gene " + str(end) + " to " + str(limit))
-        p.start()
+    all_rnas_fasta, all_rnas_index, nc_names = create_all_rnas_fasta(output_dir, ncrna_fasta_path, 
+        mrna_fasta_path)
+
+    count_reads_table1, count_reads_table2 = run_salmon(output_dir, all_rnas_index, 
+        fastq_table_path, threads)
     
-    for p in processes:
-        p.join()
-
-    #print("Merging results")
-    for value in return_dict.values():
-        coding_noncoding_pairs += value
-
-    #print(str(len(coding_noncoding_pairs)) + " correlation pairs found.")
-    output = tempDir+"/correlated.tsv"
-    for coding_name, noncoding_name, corr, method_name in coding_noncoding_pairs:
-        method_streams[method_name].write("\t".join([coding_name,noncoding_name,str(corr)]) + "\n")
-    manager._process.terminate()
-    manager.shutdown()
-    del manager
-
-'''
-Pre-processing of the count-reads table
-'''
-
-print("Ontology type is " + str(ontology_types_arg))
-print("Used metrics are: " + str(metrics_used))
-reads = pd.read_csv(count_reads_path, sep='\t')
-print(str(len(reads)) + " raw rows.")
-reads["constant"] = reads.drop([reads.columns[0]], axis=1).apply(
-        lambda row: is_constant(np.array(row.values,dtype=np.float32)),axis=1
-    )
-mask = reads["constant"] == False
-reads = reads[mask]
-del reads["constant"]
-print(str(len(reads)) + " rows after removing constant rows.")
-print(reads.head())
-
-print("Reading regulators")
-regulators = []
-with open(regulators_path,'r') as stream:
-    for line in stream.readlines():
-        regulators.append(line.rstrip("\n").lstrip(">"))
-
-'''
-Looking for metrics not calculated yet.
-'''
-
-correlation_files = {method_name:correlations_dir+"/"+method_name+".tsv" for method_name in metrics_used}
-
-for m,f in correlation_files.items():
-    delete_if_empty(f,min_cells=3,sep="\t")
-
-missing_metrics = []
-for key,val in correlation_files.items():
-    if not os.path.exists(val):
-        missing_metrics.append(key)
-
-if len(missing_metrics) > 0:
-    '''
-    Calculate any missing metrics
-    '''
-    print("Calculating correlation coefficients for the following metrics: "
-        + str(missing_metrics))
-    print("Separating regulators from regulated.")
-    print("\tRegulator IDs: " + str(len(regulators)))
-    mask = reads[reads.columns[0]].isin(regulators)
-    regulators_reads = reads.loc[mask]
-    print("\tRegulator IDs in dataframe: " 
-        + str(len(regulators_reads[regulators_reads.columns[0]].tolist())))
-    non_regulators_reads = reads
-    if not benchmarking:
-        non_regulators_reads = reads.loc[~mask]
-    print(str(len(non_regulators_reads)) + " regulated.")
-    print(str(len(regulators_reads)) + " regulators.")
+    predictor = GoPredictor(count_reads_table1, nc_names, protein_go_annotations_path, output_dir)
+    predictor.run_analysis()
     
-    available_size = available_cache
-
-    '''
-    Split the table into cache-sized smaller parts.
-    '''
-    max_for_regulators = available_size*regulators_max_portion
-    #print("Available for regulators: " + str(int(max_for_regulators/1024)) + "KB")
-    regs_size = getsizeof(regulators_reads)
-    #print("Regulators size: " + str(int(regs_size/1024)) + "KB")
-    regulator_dfs = [regulators_reads]
-    print("Dividing regulator rows:")
-    regulator_dfs = split_df_to_max_mem(regulators_reads, max_for_regulators)
-    available_size -= getsizeof(regulator_dfs[0])
-    print("Dividing non-regulator rows:")
-    dfs = split_df_to_max_mem(non_regulators_reads, available_size)
-    
-    '''print("Chunks for regulated: " + str(len(dfs)) 
-    + "\nChunks for regulators: " + str(len(regulator_dfs)))'''
-
-    df_pairs = []
-    for df in dfs:
-        for regulator_df in regulator_dfs:
-            df_pairs.append((df,regulator_df))
-
-    
-    method_streams = {metric_name:get_metric_file(metric_name) for metric_name in missing_metrics}
-
-    '''
-    Calculate the correlations for each part of the table
-    '''
-    i = 1
-    for df,regulator_df in tqdm(df_pairs):
-        find_correlated(df, regulators_reads, tempDir, missing_metrics, 
-                    method_streams, int(threads), separate_regulators = benchmarking)
-        i += 1
-    
-    for method_name, stream in method_streams.items():
-        stream.close()
-
-coding_genes = {}
-genes_coexpressed_with_ncRNA = {}
-correlation_values = {}
-
-'''
-Load correlation coefficients from the files where they are stored.
-'''
-for m, correlation_file_path in correlation_files.items():
-    print("Loading correlations from " + correlation_file_path + ".")
-    min_value = min_thresholds[m]
-    load_condition = lambda x: x >= min_value
-    if m == "SOB" or m == "FSH":
-        load_condition = lambda x: x <= min_value
-    with open(correlation_file_path,'r') as stream:
-        lines = 0
-        invalid_lines = 0
-        loaded = 0
-        for raw_line in stream.readlines():
-            cells = raw_line.rstrip("\n").split("\t")
-            if len(cells) == 3:
-                gene = cells[0]
-                rna = cells[1]
-                corr = cells[2]
-                corr_val = float(corr)
-                
-                #if corr_val >= min_value:
-                if load_condition(corr_val):
-                    if not gene in coding_genes:
-                        coding_genes[gene] = 0
-                    coding_genes[gene] += 1
-                    
-                    if not rna in genes_coexpressed_with_ncRNA:
-                        genes_coexpressed_with_ncRNA[rna] = set()
-                    genes_coexpressed_with_ncRNA[rna].add(gene)
-                    correlation_values[(rna,gene,m)] = corr
-                    loaded += 1
-            else:
-                invalid_lines += 1
-            lines += 1
-        if lines == 0:
-            print("Fatal error, no correlations could be loaded from "
-                    + correlation_file_path + "\n(The file may be "
-                    + "corrupted or just empty)")
-            quit()
-        else: 
-            print(str(float(invalid_lines)/lines)
-                + " lines without proper number of columns (4 columns)")
-            print(str(loaded), "total correlations loaded from file")
-print("correlation_values = "+str(len(correlation_values.keys())))
-print("genes_coexpressed_with_ncRNA = "+str(len(genes_coexpressed_with_ncRNA.keys())))
-print("coding_genes = "+str(len(coding_genes.keys())))
-N = len(reads)
-
-print("Loading GO network.")
-graph = obonet.read_obo(go_path)
-
-onto_id2gos = {"biological_process":{},"molecular_function":{},"cellular_component":{}}
-onto_genes_annotated_with_term = {"biological_process":{},"molecular_function":{},"cellular_component":{}}
-
-print("Reading annotation of coding genes from " + coding_gene_ontology_path)
-with open(coding_gene_ontology_path,'r') as stream:
-    lines = 0
-    invalid_lines = 0
-    associations = 0
-    for raw_line in stream.readlines():
-        cells = raw_line.rstrip("\n").split("\t")
-        if len(cells) == 3 or len(cells) == 4:
-            gene = cells[0]
-            go = cells[1]
-            onto = cells[2]
-            if onto in onto_id2gos.keys():
-                id2gos = onto_id2gos[onto]
-                genes_annotated_with_term = onto_genes_annotated_with_term[onto]
-                #coding_genes.add(gene)
-                if not (gene in coding_genes):
-                    gene = gene.upper()
-                if gene in coding_genes:
-                    if not gene in id2gos:
-                        id2gos[gene] = set()
-                    id2gos[gene].add(go)
-                    if not go in genes_annotated_with_term:
-                        genes_annotated_with_term[go] = set()
-                    genes_annotated_with_term[go].add(gene)
-                    associations += 1
-                else:
-                    invalid_lines += 1
-                    print("Invalid coding gene" + gene)
-            else:
-                invalid_lines += 1
-        else:
-            invalid_lines += 1
-        lines += 1
-    print(str(float(invalid_lines)/lines)
-            + " lines without proper number of columns (3 or 4 columns)")
-    print(str(associations) + " valid associations loaded.")
-
-def predict(tempDir,ontology_type="molecular_function",current_method=["MIC","SPR","FSH"],
-            conf_arg=None,benchmarking=False,k_min_coexpressions=1,
-            pval_threshold=0.05,fdr_threshold=0.05,
-            min_n=5, min_M=5, min_m=1):
-    """Predict functions based on the loaded correlation coefficients."""
-    
-    K = k_min_coexpressions
-    ontology_type_mini = short_ontology_name(ontology_type)
-    confidence = conf_arg
-    thresholds = confidence_thresholds[ontology_type_mini][confidence]
-    
-    print("Current method = " + str(current_method) + ", ontology type = " + ontology_type
-            + ", pvalue = " + str(pval_threshold) + ", fdr = " + str(fdr_threshold))
-    print("Current thresholds = " + str(thresholds))
-    
-    out_dir = tempDir+"/"+ontology_type_mini
-    if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
-    longer = []
-    if K != 1 or min_n != 1 or min_M != 1 or min_m != 1:
-        longer = ["K"+str(K),"n"+str(min_n),"M"+str(min_M),"m"+str(min_m)]
-    run_mode = "LNC"
-    if benchmarking:
-        run_mode = "BENCH"
-    output_file = (out_dir + "/" +".".join(["-".join(current_method),"c"+str(confidence),
-            run_mode,"pval"+str(pval_threshold),"fdr"+str(fdr_threshold)]
-            + longer + ["tsv"])).replace(".LNC.",".")
-    output_file = output_file.replace(".thNone.",".")
-
-    if os.path.exists(output_file):
-        print(output_file + " already created, skiping.")
-        return output_file, False
-
-    print("Selecting significant genes for processing")
-    valid_coding_genes = {}
-    valid_genes_coexpressed_with_ncRNA = {}
-    total = 0
-    correct_method = 0
-    valid_corr = 0
-    for rna in genes_coexpressed_with_ncRNA.keys():
-        for gene in genes_coexpressed_with_ncRNA[rna]:
-            for metric in current_method:
-                key = (rna,gene,metric)
-                if key in correlation_values.keys():
-                    corr = float(correlation_values[key])
-                    correct_method += 1
-                    if compare_to_th(corr, thresholds[metric], metric):
-                    #if corr >= thresholds[metric] or corr <= -thresholds[metric]:
-                        valid_corr += 1
-                        if not gene in valid_coding_genes:
-                            valid_coding_genes[gene] = 0
-                        valid_coding_genes[gene] += 1
-                        if not rna in valid_genes_coexpressed_with_ncRNA:
-                            valid_genes_coexpressed_with_ncRNA[rna] = set()
-                        valid_genes_coexpressed_with_ncRNA[rna].add(gene)
-            total += 1
-    
-    print("len(valid_genes_coexpressed_with_ncRNA)=" + str(len(valid_genes_coexpressed_with_ncRNA)))
-    print("valid correlations loaded:", str(valid_corr))
-    #print("Discarding coding genes with too little correlations with regulators.")
-    genes_to_discard = set()
-    for coding_gene in valid_coding_genes.keys():
-        if valid_coding_genes[coding_gene] < K:
-            genes_to_discard.add(coding_gene)
-
-    for gene in genes_to_discard:
-        del valid_coding_genes[gene]
-        for rna in valid_genes_coexpressed_with_ncRNA.keys():
-            if gene in valid_genes_coexpressed_with_ncRNA[rna]:
-                valid_genes_coexpressed_with_ncRNA[rna].remove(gene)
-    #print("len(valid_genes_coexpressed_with_ncRNA)=" + str(len(valid_genes_coexpressed_with_ncRNA)))
-
-    valid_id2gos = {}
-    valid_genes_annotated_with_term = {}
-
-    print("Reading annotation of coding genes from " + coding_gene_ontology_path)
-    id2gos = onto_id2gos[ontology_type]
-    for _id in id2gos.keys():
-        if _id in valid_coding_genes.keys():
-            valid_id2gos[_id] = id2gos[_id]
-    
-    genes_annotated_with_term = onto_genes_annotated_with_term[ontology_type]
-    for term in genes_annotated_with_term.keys():
-        for _id in genes_annotated_with_term[term]:
-            if _id in valid_coding_genes.keys():
-                if not term in valid_genes_annotated_with_term.keys():
-                    valid_genes_annotated_with_term[term] = set()
-                valid_genes_annotated_with_term[term].add(_id)
-
-    genes_annotated_with_term2 = {}
-
-    #print("Extending associations of terms to genes by including children")
-    found = 0
-    for go in valid_genes_annotated_with_term.keys():
-        genes = set()
-        genes.update(valid_genes_annotated_with_term[go])
-        before = len(genes)
-        if go in graph:
-            found += 1
-            childrens = get_ancestors(graph, go)
-            for children_go in childrens:
-                if children_go in valid_genes_annotated_with_term:
-                    genes.update(valid_genes_annotated_with_term[children_go])
-        genes_annotated_with_term2[go] = genes
-    #print(str((float(found)/len(valid_genes_annotated_with_term.keys()))*100) + "% of the GO terms found in network.")
-    valid_genes_annotated_with_term = genes_annotated_with_term2
-
-    print("Listing possible associations between rnas and GOs")
-    possible_gene_term = []
-    for rna in valid_genes_coexpressed_with_ncRNA.keys():
-        for go in valid_genes_annotated_with_term.keys():
-            possible_gene_term.append((rna, go))
-    if len(possible_gene_term) == 0:
-        print("No possible association to make, under current parameters and data."
-            + " Suggestions: Try a different correlation threshold or a different method.")
-        return "", False
-    #print("len(valid_genes_coexpressed_with_ncRNA)=" + str(len(valid_genes_coexpressed_with_ncRNA)))
-    #print("len(valid_genes_annotated_with_term)= " + str(len(valid_genes_annotated_with_term)))
-    #print("Possible gene,term = " + str(len(possible_gene_term)))
-    valid_gene_term, n_lens, M_lens, m_lens = get_valid_associations(valid_genes_coexpressed_with_ncRNA,
-                                            valid_genes_annotated_with_term,
-                                            possible_gene_term,
-                                            min_n=min_n, min_M=min_M, min_m=min_m)
-
-    print("Calculating p-values")
-    gene_term_pvalue = parallel_pvalues(N, possible_gene_term, 
-                                        valid_gene_term, n_lens, M_lens, m_lens, 
-                                        threads, available_cache)
-    print("Calculating corrected p-value (FDR)")
-    pvalues = [pval for gene, term, pval in gene_term_pvalue]
-    reject, fdrs, alphacSidak, alphacBonf = multitest.multipletests(pvalues, alpha=0.05, method='fdr_by')
-    #print("Finished calculating pvalues, saving now")
-    with open(tempDir + "/association_pvalue.tsv", 'w') as stream:
-        for i in range(len(gene_term_pvalue)):
-            if valid_gene_term[i]:
-                rna, term, pvalue = gene_term_pvalue[i]
-                stream.write(rna+"\t"+term+"\t"+str(pvalue)+"\t" + str(fdrs[i]) + "\n")
-
-    print("Selecting relevant pvalues and fdr")
-    relevant_pvals = []
-    rna_id2gos = {}
-    pval_passed = 0
-    fdr_passed = 0
-    for i in tqdm(range(len(gene_term_pvalue))):
-        rna, term, pvalue = gene_term_pvalue[i]
-        fdr = fdrs[i]
-        if pvalue <= pval_threshold:
-            pval_passed += 1
-            if fdr <= fdr_threshold:
-                fdr_passed += 1
-                relevant_pvals.append((rna, term, pvalue, fdr))
-                if not rna in rna_id2gos:
-                    rna_id2gos[rna] = set()
-                rna_id2gos[rna].add(term)
-    print(str(pval_passed) + " rna->go associations passed p-value threshold ("
-            + str((pval_passed/len(gene_term_pvalue))*100) + "%)")
-    print(str(fdr_passed) + " rna->go associations passed fdr threshold ("
-            + str((fdr_passed/len(gene_term_pvalue))*100) + "%)")
-    
-    print("Writing results")
-    print("Output annotation is " + output_file)
-    with open(output_file, 'w') as stream:
-        for rna, term, pvalue, fdr in relevant_pvals:
-            stream.write("\t".join([rna,term,ontology_type,str(pvalue),str(fdr)])+"\n")
-    return output_file, True
-
-all_confs = set()
-for onto, confs in confidence_levels.items():
-    all_confs.update(confs)
-all_confs = list(all_confs)
-all_confs.sort(key=lambda x: int(x))
-
-for conf in all_confs:
-    output_files = []
-    created = 0
-    for onto in ontology_types_arg:
-        confs_to_use = confidence_levels[onto]
-        if conf in confs_to_use:
-            metrics_for_params = default_methods[str(conf)][onto]
-
-            valid_metrics = []
-            current_ths = confidence_thresholds[short_ontology_name(onto)][conf]
-            for metric_name in metrics_for_params:
-                if current_ths[metric_name] != None:
-                    valid_metrics.append(metric_name)
-            if len(valid_metrics) > 0:
-                metrics_for_params = valid_metrics
-                out_file, made = predict(tempDir,ontology_type=onto,
-                        current_method=metrics_for_params,
-                        conf_arg=conf,
-                        benchmarking=benchmarking,k_min_coexpressions=K,
-                        pval_threshold=pval,fdr_threshold=fdr,
-                        min_n=min_n, min_M=min_M, min_m=min_m)
-                if out_file != "":
-                    output_files.append((out_file,onto))
-                if made:
-                    created += 1
-            else:
-                print("No valid metrics for current confidence level")
-    print("Writing annotation file with all ontologies")
-    if len(output_files) > 1 and created > 1:
-        lines = []
-        ontos = set()
-        for output_file,onto_value in output_files:
-            with open(output_file,'r') as stream:
-                new_lines = [line for line in stream.readlines()]
-                lines += new_lines
-            ontos.add(onto_value)
-        ontos = list(ontos)
-        ontos.sort()
-        ontos_str = "_".join([short_ontology_name(str(onto)) 
-                            for onto in ontos])
-        if len(ontos) == 3:
-            ontos_str = "ALL"
-        onto_dir = tempDir + "/" + ontos_str
-        if not os.path.exists(onto_dir):
-            os.mkdir(onto_dir)
-        output_file = (onto_dir + "/" + ".".join(["-".join(valid_metrics),
-                            "c"+str(conf),"bh="+str(benchmarking),
-                            "pval"+str(pval),"fdr"+str(fdr),"tsv"]
-                        ))
-        with open(output_file,'w') as stream:
-            for line in lines:
-                stream.write(line)
