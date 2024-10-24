@@ -20,3 +20,4 @@ test/*
 !test/LNCRNA2GOA_BP.tsv
 run_gigas.sh
 up.sh
+additional_analysis/*.csv
