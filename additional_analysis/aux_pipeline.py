@@ -1,3 +1,4 @@
+import json
 import subprocess
 import os
 from sys import getsizeof
@@ -5,14 +6,34 @@ from tqdm import tqdm
 import sys
 import pandas as pd
 import obonet
+import numpy as np
+from ete3 import NCBITaxa
 
 from analyze_lncrna_expression import find_lncrna_classes
+
+ncbi = NCBITaxa()
 
 def runCommand(cmd, print_cmd=True):
     if print_cmd:
         print("\t> " + cmd)
     process = subprocess.call(cmd, shell=True)
     return process
+
+def get_tax_name(id):
+    ids = ncbi.translate_to_names([id])
+    return str(ids[0])
+
+def evol_sim(taxid1, taxid2):
+    try:
+        lineage1 = ncbi.get_lineage(taxid1)
+    except ValueError as err:
+        print(err)
+        return 0
+    
+    l1 = set(lineage1)
+    l2 = set(ncbi.get_lineage(taxid2))
+    common_taxid = l1.intersection(l2)
+    return len(common_taxid)
 
 def get_go_list(p):
     return set([l.rstrip("\n").split()[0] for l in open(p,'r').readlines()])
@@ -154,12 +175,205 @@ def make_tissue_summary(df2_path, output_path):
     summary_df.to_csv(summary_path, sep='\t', index=False, header=True)
     print(summary_df)
 
+def taxid_from_dbid(row):
+    if 'sseqid' in row:
+        sseqid = row['sseqid']
+        if '_' in sseqid:
+            taxid_str = sseqid.split("_")[-1]
+            try:
+                taxid = int(taxid_str)
+                return taxid
+            except Exception as ex:
+                pass
+    
+    return None
+
+def find_sequence_homologs(transcripts_fasta, fasta_dbs, taxids, analysis_dir):
+    all_rna_names = []
+    for rawline in open(transcripts_fasta, 'r').readlines():
+        if rawline.startswith('>'):
+            all_rna_names.append(rawline.lstrip('>'))
+    n_rnas = len(all_rna_names)
+
+    align_results = []
+    for fasta_db in fasta_dbs:
+        result_paf = analysis_dir + '/align_to_'+os.path.basename(fasta_db)+'.paf'
+        print('Aligning to', fasta_db)
+        created = os.path.exists(result_paf)
+        align_results.append(result_paf)
+        if not created:
+            index_1 = fasta_db + '.mmi'
+            index_2 = os.path.dirname(fasta_db) + '/index.mmi'
+            correct_indexes = [i for i in [index_1, index_2] if os.path.exists(i)]
+            if len(correct_indexes) == 0:
+                print('No index found for', fasta_db)
+                index_cmd = 'minimap2 -d ' + index_2 + ' ' + fasta_db
+                runCommand(index_cmd)
+                correct_indexes.append(index_2)
+            
+            index_path = correct_indexes[0]
+            cmd = " ".join(["minimap2",
+                "-x sr -t", str(8),
+                index_path, transcripts_fasta,
+                ">", result_paf])
+            code = runCommand(cmd)
+        else:
+            print(result_paf, 'already calculated')
+    
+    dfs = []
+    for result_path, taxid in zip(align_results, taxids):
+        print('Loading', result_path)
+        minimap_df = pd.read_csv(result_path, sep='\t', header=None, index_col=False,
+                names=["qseqid","qseq_len","qstart","qend","strand",
+                    "sseqid","sseq_len","sstart","send","matchs",
+                    "block_len","quality","13th","14th","15th","16th","17th","18th"])
+        minimap_df = minimap_df.astype({"qstart": 'int32', "qend": 'int32', "qseq_len": "int32",
+                    "sstart": 'int32', "send": 'int32', "sseq_len": "int32",
+                    "quality": 'int32', "block_len": "int32", "matchs": "int32"})
+        
+        if taxid != None:
+            minimap_df['taxid'] = int(taxid)
+        else:
+            minimap_df["taxid"] = minimap_df.apply(
+                lambda row: taxid_from_dbid(row), axis=1)
+            
+        dfs.append(minimap_df)
+
+    minimap_df = pd.concat(dfs)
+
+    print('Getting species names:')
+    all_taxids = [n for n in minimap_df['taxid'].unique().tolist() if type(n) == int]
+    print(len(all_taxids), 'taxon ids')
+    species_names_vec = ncbi.translate_to_names(all_taxids)
+    taxid_to_name = {all_taxids[i]: species_names_vec[i] for i in range(len(all_taxids)) if type(species_names_vec[i]) == str}
+    tax_closeness = {t: evol_sim(t, 113544) if t in taxid_to_name else 0 for t, name in taxid_to_name.items()}
+
+    minimap_df["species"] = minimap_df.apply(
+        lambda row: taxid_to_name[row['taxid']] if row['taxid'] in taxid_to_name else None, axis=1)
+
+    minimap_df = minimap_df[minimap_df['species'] != "Arapaima gigas"]
+
+    minimap_df["id"] = np.arange(len(minimap_df))
+
+    print("Calculating taxonomic closeness")
+    minimap_df["common_taxid"] = minimap_df.apply(
+        lambda row: tax_closeness[row['taxid']] if row['taxid'] in tax_closeness else None, axis=1)
+
+    print("Filtering...")
+
+    minimap_df["qcovs"] = minimap_df.apply(
+        lambda row: (row["qend"]-row["qstart"]) / row["qseq_len"], axis=1)
+    minimap_df["identity"] = minimap_df.apply(
+        lambda row: row["matchs"] / row["block_len"], axis=1)
+
+    print(str(minimap_df.head()))
+    print(str(len(minimap_df)) + " alignments")
+
+    high_th = 0.80
+    #minimap_df = minimap_df.reindex().copy(deep=True)
+    minimap_df['cov_id_min'] = minimap_df[['identity','qcovs']].min(axis=1)
+    minimap_df['is_similar'] = minimap_df['cov_id_min'] >= high_th
+
+    print("Finding best hits")
+    
+    print("Getting ncbi common names")
+    common_names = ncbi.get_common_names(set(minimap_df['taxid'].unique()))
+    common_names[41665] = "bony fishes"
+    species_dfs = []
+    min_hits_to_list_species = 19
+
+    print('Finding best hits by species')
+    taxid_bar =tqdm(total=len(taxid_to_name.keys()))
+    for taxid, species_hits in minimap_df.groupby(["taxid"], sort=True):
+        if len(species_hits) > 2000:
+            print(taxid, len(species_hits), 'hits')
+        species_hits2 = species_hits.copy(deep=True)
+        best_hits = set()
+        rna_groups = tqdm(species_hits2.groupby(['qseqid'])) if len(species_hits) > 2000 else species_hits2.groupby(['qseqid'])
+        for gigas_rna, rna_hits in rna_groups:
+            sorted = rna_hits.sort_values(["identity","qcovs","common_taxid"],
+                ascending=[False,False,False])
+            hit = sorted.iloc[0]
+            best_hits.add(hit['id'])
+        species_best_hits = species_hits[species_hits['id'].isin(best_hits)].copy(deep=True)
+        if taxid in common_names:
+            common_name = common_names[taxid]
+        else:
+            common_name = None
+        species_best_hits['common_name'] = common_name
+        n_similar = len(species_best_hits[species_best_hits['is_similar']])
+        if n_similar < min_hits_to_list_species:
+            species_best_hits['aligned_to'] = 'others'
+        else:
+            species_best_hits['aligned_to'] = common_name
+        if len(species_hits) > 2000:
+            print('\tbest hits:', len(species_best_hits))
+        if len(species_hits) > 2000:
+            print('\tsimilar:', n_similar)
+        species_dfs.append(species_best_hits)
+        taxid_bar.update(1)
+    taxid_bar.close()
+    
+    minimap_bests = pd.concat(species_dfs)
+
+    print(str(len(minimap_bests)) + " total ncRNA with homologs.")
+
+    homologs_path = analysis_dir + '/homologs.tsv'
+    minimap_bests.to_csv(homologs_path, sep='\t')
+
+    homology_json = {}
+    for name, species_hits in minimap_bests.groupby(["aligned_to"], sort=True):
+        similar_names = species_hits[species_hits['is_similar']]['qseqid'].unique().tolist()
+        n_similar = len(similar_names)
+        perc_aligned = n_similar / n_rnas
+        print(name, ' best hits are', n_similar)
+        hits = []
+        taxon_id = []
+        scientific_name = []
+        for _, row in tqdm(species_hits.iterrows()):
+            taxid = row['taxid']
+            if taxid == taxid and taxid != None:
+                taxon_id.append(taxid)
+            name = row['species']
+            if name == name and name != None:
+                scientific_name.append(name)
+
+            rna_name = row['qseqid']
+            cov = row['qcovs']
+            identity = row['identity']
+            score = row['quality']
+
+            hits.append({'rna': rna_name, 'cov': cov, 'id': identity, 'score': score})
+        
+        homology_json[name] = {
+            'name': name,
+            'perc_gigas_mapped': n_similar,
+            'perc_aligned': perc_aligned,
+            'taxid': list(set(taxon_id)),
+            'scientific_name': list(set(scientific_name)),
+            'similar_rnas': similar_names,
+            'hits': hits
+        }
+    homologs_json_path = analysis_dir + '/homologs.json'
+    json.dump(homology_json, open(homologs_json_path, 'w'), indent=4)
+    return minimap_bests, homology_json
+
 if __name__ == '__main__':
     gigas_dir = sys.argv[1]
+    niloticus_genome_path = sys.argv[2]
+    arowana_genome_path = sys.argv[3]
+    rnacentral_db_path = sys.argv[4]
     analysis_dir = gigas_dir + '/analysis_for_paper'
     samples_tpm = gigas_dir + '/go_predict/samples_tpm.tsv'
     results_df_path = analysis_dir + '/ncrna_classification.tsv'
     expressed_df_path = analysis_dir + '/ncrna_expressed.tsv'
+    transcriptome_fasta = gigas_dir + '/annotation/step_25-write_transcriptome/transcriptome.fasta'
+    if not os.path.exists(analysis_dir):
+        os.mkdir(analysis_dir)
+    homolog_df, homolog_json = find_sequence_homologs(transcriptome_fasta, 
+        [niloticus_genome_path, arowana_genome_path, rnacentral_db_path], 
+        ['91721', '113540', None], analysis_dir)
+    
     '''filter_ncrna_cmd = ['/usr/bin/Rscript', '--vanilla', 'filter_ncrna_counts.R', samples_tpm]
     runCommand(' '.join(filter_ncrna_cmd))
 
