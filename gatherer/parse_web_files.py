@@ -7,12 +7,12 @@ import json
 rfam_path = "Rfam.seed"
 if not os.path.exists(rfam_path):
     seed_ftp = "ftp://ftp.ebi.ac.uk/pub/databases/Rfam/CURRENT/Rfam.seed.gz"
-    code = run_command("wget " + seed_ftp)
+    code = runCommand("wget " + seed_ftp)
     if code != 0:
         print("Could not download Rfam family informations.")
         quit()
 
-    code = run_command("gzip -d Rfam.seed.gz")
+    code = runCommand("gzip -d Rfam.seed.gz")
     if code != 0:
         print("Could not extract Rfam family informations from gzip")
         quit()
@@ -21,7 +21,7 @@ rfam2rnacentral_path = "rfam.tsv"
 if not os.path.exists(rfam2rnacentral_path):
     rfam2rnacentral_ftp = ("ftp://ftp.ebi.ac.uk/pub/databases/RNAcentral/"
                         +"current_release/id_mapping/database_mappings/rfam.tsv")
-    code = run_command("wget " + rfam2rnacentral_ftp)
+    code = runCommand("wget " + rfam2rnacentral_ftp)
     if code != 0:
         print("Could not download rnacentral rfam mappings.")
         quit()
@@ -49,7 +49,7 @@ with open(rfam2rnacentral_path,'r') as input_stream:
 print("Making rfam2type from " + rfam_path)
 rfam_types = []
 rfam2type = {}
-with open(rfam_path, 'r', encoding='Windows-1252') as input_stream:
+with open(rfam_path, 'r', encoding='unicode_escape') as input_stream:
     current_rfam = ""
     ACs = []
     TPs = []

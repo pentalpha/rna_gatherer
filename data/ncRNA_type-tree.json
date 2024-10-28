@@ -1,28 +1,28 @@
 {
-    "Gene": {
-        "children": [
-            "rRNA",
-            "telomerase_RNA",
-            "tmRNA",
-            "SRP_RNA",
-            "sRNA",
-            "tRNA",
-            "ribozyme",
-            "antisense",
-            "antitoxin",
-            "vault_RNA",
-            "snRNA",
-            "miRNA",
-            "lncRNA",
-            "CRISPR",
-            "Y_RNA",
-            "scRNA"
-        ],
-        "parent": null
-    },
     "scRNA": {
         "children": [],
         "parent": "Gene"
+    },
+    "Gene": {
+        "children": [
+            "tmRNA",
+            "snRNA",
+            "antisense",
+            "vault_RNA",
+            "SRP_RNA",
+            "tRNA",
+            "rRNA",
+            "ribozyme",
+            "Y_RNA",
+            "telomerase_RNA",
+            "miRNA",
+            "ncRNA",
+            "lncRNA",
+            "CRISPR",
+            "antitoxin",
+            "sRNA"
+        ],
+        "parent": null
     },
     "rRNA": {
         "children": [],
@@ -30,8 +30,8 @@
     },
     "snRNA": {
         "children": [
-            "splicing",
-            "snoRNA"
+            "snoRNA",
+            "splicing"
         ],
         "parent": "Gene"
     },
@@ -46,9 +46,9 @@
     "ribozyme": {
         "children": [
             "autocatalytically_spliced_intron",
+            "RNase_P_RNA",
             "RNase_MRP_RNA",
-            "hammerhead_ribozyme",
-            "RNase_P_RNA"
+            "hammerhead_ribozyme"
         ],
         "parent": "Gene"
     },
@@ -69,7 +69,9 @@
         "parent": "Gene"
     },
     "miRNA": {
-        "children": [],
+        "children": [
+            "pre_miRNA"
+        ],
         "parent": "Gene"
     },
     "Intron": {
@@ -78,11 +80,11 @@
     },
     "Cis-reg": {
         "children": [
+            "frameshift_element",
             "IRES",
-            "riboswitch",
             "leader",
             "thermoregulator",
-            "frameshift_element"
+            "riboswitch"
         ],
         "parent": null
     },
@@ -130,7 +132,11 @@
         "children": [],
         "parent": "Gene"
     },
-    "SRP_RNA": {
+    "ncRNA": {
+        "children": [],
+        "parent": "Gene"
+    },
+    "vault_RNA": {
         "children": [],
         "parent": "Gene"
     },
@@ -138,7 +144,19 @@
         "children": [],
         "parent": null
     },
+    "pre_miRNA": {
+        "children": [],
+        "parent": "miRNA"
+    },
     "tmRNA": {
+        "children": [],
+        "parent": "Gene"
+    },
+    "Y_RNA": {
+        "children": [],
+        "parent": "Gene"
+    },
+    "SRP_RNA": {
         "children": [],
         "parent": "Gene"
     },
@@ -146,28 +164,20 @@
         "children": [],
         "parent": "ribozyme"
     },
-    "hammerhead_ribozyme": {
-        "children": [],
-        "parent": "ribozyme"
-    },
-    "Y_RNA": {
-        "children": [],
-        "parent": "Gene"
-    },
-    "RNase_MRP_RNA": {
-        "children": [],
-        "parent": "ribozyme"
-    },
     "telomerase_RNA": {
         "children": [],
         "parent": "Gene"
+    },
+    "hammerhead_ribozyme": {
+        "children": [],
+        "parent": "ribozyme"
     },
     "autocatalytically_spliced_intron": {
         "children": [],
         "parent": "ribozyme"
     },
-    "vault_RNA": {
+    "RNase_MRP_RNA": {
         "children": [],
-        "parent": "Gene"
+        "parent": "ribozyme"
     }
 }

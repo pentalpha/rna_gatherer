@@ -1,3 +1,4 @@
+import json
 import os
 import numpy as np
 import pandas as pd
@@ -240,9 +241,19 @@ def get_rfam_ids(df):
 def get_ncrna_type(attrs_str):
     attrs = get_gff_attributes(attrs_str)
     if "type" in attrs:
-        return attrs["type"]
+        tp = attrs["type"]
+        if not tp.startswith('Gene'):
+            tp = 'other|'+tp
+        return tp
     else:
         return "other"
+    
+def get_ncrna_ids(df):
+    ids = []
+    for index, row in df.iterrows():
+        attrs = get_gff_attributes(row["attribute"])
+        ids.append(attrs['ID'])
+    return ids
 
 def get_subtype(tp):
     parts = tp.split("|")
@@ -305,9 +316,9 @@ def review_df(df, sources):
     for src in sources:
         if not src in by_source:
             by_source[src] = 0
-    n_rnas = len(df)
     families = get_rfam_ids(df)
-    return n_rnas, families, by_source
+    ncrna_ids = get_ncrna_ids(df)
+    return families, by_source, ncrna_ids
 
 def review_annotations(args, confs, tmpDir, stepDir):
     annotation = pd.read_csv(stepDir["contaminant_removal"] + "/annotation.gff", sep="\t", header=None,
@@ -324,95 +335,58 @@ def review_annotations(args, confs, tmpDir, stepDir):
     sources = source_list
     sources.sort()
     for rna_type, type_df in annotation.groupby(['rna_type']):
-        type_rnas, families, by_source = review_df(type_df,sources)
-        type_line = [rna_type, type_rnas, len(families)] + [by_source[src] for src in sources]
+        families, by_source, ncrna_ids = review_df(type_df,sources)
+        by_source['ncRNA Type'] = rna_type
+        by_source['RFAM Families'] = len(families)
+        by_source['Number of ncRNAs'] = len(ncrna_ids)
+        by_source['ncRNA IDs'] = ncrna_ids
+        by_source['RFAM IDs'] = list(families)
+        type_line = by_source
 
         subtype_lines = []
         for subtype, subtype_df in type_df.groupby(['rna_subtype']):
-            subtype_rnas, subtype_families, subtype_by_source = review_df(subtype_df, sources)
-            subtype_line = [subtype, subtype_rnas, len(subtype_families)] + [subtype_by_source[src] for src in sources]
-            subtype_lines.append(subtype_line)
-        subtype_lines.sort(key=lambda x: x[1], reverse=True)
+            subtype_families, subtype_by_source, subtype_ncrna_ids = review_df(subtype_df, sources)
+            subtype_by_source['ncRNA Type'] = rna_type+';'+subtype
+            subtype_by_source['RFAM Families'] = len(subtype_families)
+            subtype_by_source['Number of ncRNAs'] = len(subtype_ncrna_ids)
+            subtype_by_source['ncRNA IDs'] = subtype_ncrna_ids
+            subtype_by_source['RFAM IDs'] = list(subtype_families)
+            subtype_lines.append(subtype_by_source)
+        subtype_lines.sort(key=lambda x: x['Number of ncRNAs'], reverse=True)
         if len(subtype_lines) >= 2:
             type_lists.append([type_line, subtype_lines])
         else:
             type_lists.append([type_line, []])
-    type_lists.sort(key=lambda x: x[0][1], reverse=True)
+    type_lists.sort(key=lambda x: x[0]['Number of ncRNAs'], reverse=True)
 
-    all_rnas, all_families, all_by_source = review_df(annotation, sources)
-    type_lists.append([["All", all_rnas, len(all_families)] + [all_by_source[src] for src in sources], []])
+    all_families, all_by_source, all_ncrna_ids = review_df(annotation, sources)
+    all_by_source['ncRNA Type'] = 'All'
+    all_by_source['RFAM Families'] = len(all_families)
+    all_by_source['Number of ncRNAs'] = len(all_ncrna_ids)
+    all_by_source['ncRNA IDs'] = all_ncrna_ids
+    all_by_source['RFAM IDs'] = list(all_families)
+    type_lists.append([all_by_source, []])
     review_rows = []
     for tp, subtps in type_lists:
-        tp[0] += "\t"
         review_rows.append(tp)
         for subtp_line in subtps:
-            subtp_line[0] = "\t"+subtp_line[0]
             review_rows.append(subtp_line)
-    for i in range(len(sources)):
-        sources[i] = sources[i].replace("reference_mapping","Reference Mapping")
-        sources[i] = sources[i].replace("rnasamba","RNA Samba")
-        sources[i] = sources[i].replace("db_alignment","Database Alignment")
+
+    df_columns = ['ncRNA Type', 'Number of ncRNAs', 'RFAM Families'] + sources
+    df_header = '\t'.join(df_columns)
+    df_header = df_header.replace("reference_mapping","Reference Mapping")
+    df_header = df_header.replace("rnasamba","RNA Samba")
+    df_header = df_header.replace("db_alignment","Database Alignment")
+
     with open(tmpDir+"/type_review.tsv",'w') as stream:
-        stream.write("\t".join(['ncRNA Types\t', 'Number of ncRNAs', 'RFAM Families'] + sources)+"\n")
+        stream.write(df_header+"\n")
         for cells in review_rows:
-            newline = "\t".join([str(x) for x in cells])
+            newline = "\t".join([str(cells[col]) for col in df_columns])
             stream.write(newline+'\n')
             print(newline)
-
-    '''print("Counting RNA Types...")
-    def count_rna_types(df):
-        type_counts = {rna_type: len(type_annotation) 
-                    for rna_type, type_annotation in df.groupby(["rna_type"])}
-        expanded_type_counts = {}
-        for rna_type in type_counts.keys():
-            total = 0
-            for another_type, counts in type_counts.items():
-                if rna_type in another_type:
-                    total += counts
-            expanded_type_counts[rna_type] = total
-        expanded_type_counts["All"] = len(df)
-        return expanded_type_counts
-        
-    counts_by_sources = {"All": count_rna_types(annotation)}
-    for source_name, source_annotation in tqdm(annotation.groupby(["source"])):
-        counts_by_sources[source_name] = count_rna_types(source_annotation)
     
-    print("Counting RFAM families")
-    def count_rfam_families(df):
-        rfam_ids = {rna_type: get_rfam_ids(type_annotation) 
-                    for rna_type, type_annotation in df.groupby(["rna_type"])}
-        expanded_rfam_counts = {}
-        for rna_type in tqdm(rfam_ids.keys()):
-            rfam_total = set()
-            for another_type, ids in rfam_ids.items():
-                if rna_type in another_type:
-                    rfam_total.update(ids)
-            expanded_rfam_counts[rna_type] = len(rfam_total)
-        expanded_rfam_counts["All"] = len(get_rfam_ids(df))
-        return expanded_rfam_counts
-    rfam_counts = count_rfam_families(annotation)
-
-    def make_row(type_name, type_annotation):
-        new_row = [type_name]
-        new_row.append(counts_by_sources["All"][type_name])
-        new_row.append(rfam_counts[type_name])
-        for source in source_list:
-            n = 0
-            source_counts = counts_by_sources[source]
-            if type_name in source_counts:
-                n = source_counts[type_name]
-            new_row.append(n)
-        return new_row
-
-    print("Grouping by rna_type")
-    for rna_type, type_annotation in tqdm(annotation.groupby(["rna_type"])):
-        review_rows.append(make_row(rna_type, type_annotation))
-    review_rows = sort_by_genes(review_rows)
-    review_rows = [make_row("All", annotation)] + review_rows
-    print("\n".join([str(row) for row in review_rows]))
-    type_review_df = pd.DataFrame(review_rows, 
-                            columns=["ncRNA Type", "Total", "Families"] + source_list)
-    type_review_df.to_csv(tmpDir+"/type_review.tsv", sep="\t", index = False)'''
+    types_json = json.dumps(review_rows, indent=4)
+    open(tmpDir+"/type_review.json",'w').write(types_json)
     return True
 
 def write_transcriptome(args, confs, tmpDir, stepDir):
