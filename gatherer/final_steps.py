@@ -231,17 +231,24 @@ def number_of_genbank_ids(df):
 
 def get_rfam_ids(df):
     count = set()
+    no_id = 0
     for index, row in df.iterrows():
         attrs = get_gff_attributes(row["attribute"])
         if "rfam" in attrs:
             if attrs["rfam"] != "None":
                 count.add(attrs["rfam"])
-    return count
+            else:
+                no_id += 1
+        else:
+            no_id += 1
+    return count, no_id
 
 def get_ncrna_type(attrs_str):
     attrs = get_gff_attributes(attrs_str)
+    if attrs['ID'] == 'URS0001BBEC3B.0':
+        attrs['type'] = 'Gene|miRNA'
     if "type" in attrs:
-        tp = attrs["type"]
+        tp = attrs["type"].replace(';', '|')
         if not tp.startswith('Gene'):
             tp = 'other|'+tp
         return tp
@@ -256,69 +263,20 @@ def get_ncrna_ids(df):
     return ids
 
 def get_subtype(tp):
-    parts = tp.split("|")
+    parts = tp.replace(';', '|').split("|")
     if len(parts) == 1:
         return "No subtype"
     else:
-        return parts[1]
-
-'''def group_rows(input_rows):
-    higher_level = 100
-    for row in input_rows:
-        level = len(row[0].split(";"))
-        if level < higher_level:
-            higher_level = level
-
-    head_rows = []
-    for row in input_rows:
-        level = len(row[0].split(";"))
-        if level == higher_level:
-            head_rows.append(row)
-    if len(head_rows) == len(input_rows):
-        input_rows.sort(key=lambda row: row[1], reverse=True)
-        return [[row, []] for row in input_rows]
-    else:
-        row_groups = []
-        for head_row in head_rows:
-            head_row_id = ";".join(head_row[0].split(";")[0:higher_level])
-            group = []
-            ids = []
-            for row in input_rows:
-                if head_row_id in row[0] and head_row_id != row[0]:
-                    group.append(row)
-                    ids.append(row[0])
-            #print("Group of " + head_row_id + ": " + str(ids))
-            grouped_group = group_rows(group)
-            row_groups.append([head_row, grouped_group])
-        row_groups.sort(key=lambda row: row[0][1], reverse=True)
-        
-        return row_groups
-
-def expand_groups(groups):
-    rows = []
-    for head_row, sub_rows in groups:
-        rows.append(head_row)
-        for sub_row, sub_group in sub_rows:
-            rows.append(sub_row)
-            if len(sub_group) > 0:
-                expanded = expand_groups(sub_group)
-                rows += expanded
-    return rows
-
-def sort_by_genes(input_rows):
-    input_rows.sort(key=lambda row: row[0], reverse=False)
-    grouped = group_rows(input_rows)
-    new_rows = expand_groups(grouped)
-    return new_rows'''
+        return parts[1].replace(';No subtype', '').rstrip(';')
 
 def review_df(df, sources):
     by_source = {src: len(src_group) for src, src_group in df.groupby(["source"])}
     for src in sources:
         if not src in by_source:
             by_source[src] = 0
-    families = get_rfam_ids(df)
+    families, no_family = get_rfam_ids(df)
     ncrna_ids = get_ncrna_ids(df)
-    return families, by_source, ncrna_ids
+    return families, by_source, ncrna_ids, len(df)-no_family
 
 def review_annotations(args, confs, tmpDir, stepDir):
     annotation = pd.read_csv(stepDir["contaminant_removal"] + "/annotation.gff", sep="\t", header=None,
@@ -334,24 +292,41 @@ def review_annotations(args, confs, tmpDir, stepDir):
                                                 axis = 1)
     sources = source_list
     sources.sort()
+    df_columns = ['ncRNA Type', 'Number of ncRNAs', 'RFAM Families', 'With RFAM Family'] + sources
+    print(df_columns)
     for rna_type, type_df in annotation.groupby(['rna_type']):
-        families, by_source, ncrna_ids = review_df(type_df,sources)
+        print('Main type:', rna_type)
+        if rna_type == 'Gene;sRNA':
+            attrs = type_df['attribute'].tolist()
+            for t in attrs:
+                print(t)
+        print('Secondary types:', type_df['rna_subtype'].unique().tolist())
+        families, by_source, ncrna_ids, with_family = review_df(type_df,sources)
         by_source['ncRNA Type'] = rna_type
         by_source['RFAM Families'] = len(families)
         by_source['Number of ncRNAs'] = len(ncrna_ids)
+        by_source['With RFAM Family'] = with_family / len(ncrna_ids)
+        for c in sources:
+            by_source[c] = by_source[c] / len(ncrna_ids)
         by_source['ncRNA IDs'] = ncrna_ids
         by_source['RFAM IDs'] = list(families)
+        print([by_source[c] for c in df_columns])
         type_line = by_source
 
         subtype_lines = []
         for subtype, subtype_df in type_df.groupby(['rna_subtype']):
-            subtype_families, subtype_by_source, subtype_ncrna_ids = review_df(subtype_df, sources)
-            subtype_by_source['ncRNA Type'] = rna_type+';'+subtype
-            subtype_by_source['RFAM Families'] = len(subtype_families)
-            subtype_by_source['Number of ncRNAs'] = len(subtype_ncrna_ids)
-            subtype_by_source['ncRNA IDs'] = subtype_ncrna_ids
-            subtype_by_source['RFAM IDs'] = list(subtype_families)
-            subtype_lines.append(subtype_by_source)
+            subtype_families, subtype_by_source, subtype_ncrna_ids, with_family = review_df(subtype_df, sources)
+            if subtype != 'No subtype':
+                subtype_by_source['ncRNA Type'] = rna_type+';'+subtype
+                subtype_by_source['RFAM Families'] = len(subtype_families)
+                subtype_by_source['Number of ncRNAs'] = len(subtype_ncrna_ids)
+                subtype_by_source['With RFAM Family'] = (with_family / len(subtype_ncrna_ids))*100
+                for c in sources:
+                    subtype_by_source[c] = (subtype_by_source[c] / len(subtype_ncrna_ids))*100
+                subtype_by_source['ncRNA IDs'] = subtype_ncrna_ids
+                subtype_by_source['RFAM IDs'] = list(subtype_families)
+                print([subtype_by_source[c] for c in df_columns])
+                subtype_lines.append(subtype_by_source)
         subtype_lines.sort(key=lambda x: x['Number of ncRNAs'], reverse=True)
         if len(subtype_lines) >= 2:
             type_lists.append([type_line, subtype_lines])
@@ -359,10 +334,13 @@ def review_annotations(args, confs, tmpDir, stepDir):
             type_lists.append([type_line, []])
     type_lists.sort(key=lambda x: x[0]['Number of ncRNAs'], reverse=True)
 
-    all_families, all_by_source, all_ncrna_ids = review_df(annotation, sources)
+    all_families, all_by_source, all_ncrna_ids, with_family = review_df(annotation, sources)
     all_by_source['ncRNA Type'] = 'All'
     all_by_source['RFAM Families'] = len(all_families)
     all_by_source['Number of ncRNAs'] = len(all_ncrna_ids)
+    all_by_source['With RFAM Family'] = (with_family / len(all_ncrna_ids))*100
+    for c in sources:
+        all_by_source[c] = (all_by_source[c] / len(all_ncrna_ids))*100
     all_by_source['ncRNA IDs'] = all_ncrna_ids
     all_by_source['RFAM IDs'] = list(all_families)
     type_lists.append([all_by_source, []])
@@ -372,7 +350,6 @@ def review_annotations(args, confs, tmpDir, stepDir):
         for subtp_line in subtps:
             review_rows.append(subtp_line)
 
-    df_columns = ['ncRNA Type', 'Number of ncRNAs', 'RFAM Families'] + sources
     df_header = '\t'.join(df_columns)
     df_header = df_header.replace("reference_mapping","Reference Mapping")
     df_header = df_header.replace("rnasamba","RNA Samba")
