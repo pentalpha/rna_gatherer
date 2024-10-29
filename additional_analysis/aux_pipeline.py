@@ -404,10 +404,10 @@ def expand_types_review(gigas_dir, homolog_df_path, min_for_hit=0.8):
     types_df["Found With High Similarity in Other Species"] = types_df.apply(
         lambda row: homology_by_type[row['ncRNA Type']], axis=1)
     
-    types_df.to_csv(os.path.dirname(homolog_df_path)+'/types_review.tsv', sep='\t', index=False)
+    types_df.to_csv(os.path.dirname(homolog_df_path)+'/types_review.tsv', sep='\t', index=False, decimal=',')
 
     species_df = pd.DataFrame(by_species)
-    species_df.to_csv(os.path.dirname(homolog_df_path)+'/similar_species.tsv', sep='\t', index=False)
+    species_df.to_csv(os.path.dirname(homolog_df_path)+'/similar_species.tsv', sep='\t', index=False, decimal=',')
 
 if __name__ == '__main__':
     gigas_dir = sys.argv[1]
@@ -429,7 +429,7 @@ if __name__ == '__main__':
             [niloticus_genome_path, arowana_genome_path, rnacentral_db_path], 
             ['91721', '113540', None], analysis_dir)
     expand_types_review(gigas_dir, homolog_df_path)
-    
+    quit()
     if not os.path.exists('counts_noduplicates_noprot.csv'):
         filter_ncrna_cmd = ['/usr/bin/Rscript', '--vanilla', 'filter_ncrna_counts.R', samples_tpm]
         runCommand(' '.join(filter_ncrna_cmd))
