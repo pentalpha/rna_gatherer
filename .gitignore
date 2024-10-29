@@ -21,3 +21,4 @@ test/*
 run_gigas.sh
 up.sh
 additional_analysis/*.csv
+additional_analysis/taxdump.tar.gz

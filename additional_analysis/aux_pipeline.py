@@ -358,6 +358,57 @@ def find_sequence_homologs(transcripts_fasta, fasta_dbs, taxids, analysis_dir):
     json.dump(homology_json, open(homologs_json_path, 'w'), indent=4)
     return minimap_bests, homology_json
 
+def expand_types_review(gigas_dir, homolog_df_path, min_for_hit=0.8):
+    print('Loading homolog information')
+    homologs_df = pd.read_csv(homolog_df_path, sep='\t')
+    homologs_df = homologs_df[homologs_df['cov_id_min'] >= min_for_hit]
+    print('Loading rna types json')
+    types_json = json.load(open(gigas_dir + '/annotation/step_24-review_annotations/type_review.json'))
+
+    print("Calculating Relevant alignments")
+    has_relevant_hit = set()
+    relevant_hits_at_distant_species = set()
+    by_species = []
+    for species_name, species_df in homologs_df.groupby(['species']):
+        common_names = species_df['common_name'].unique().tolist()
+        common_names = [c for c in common_names if type(c) == str and not(c in ['False'])]
+        if len(common_names) > 0:
+            species_name = common_names[0]
+        relevant_hits = species_df['qseqid'].unique().tolist()
+        has_relevant_hit.update(relevant_hits)
+        
+        if len(relevant_hits) < 19:
+            relevant_hits_at_distant_species.update(relevant_hits)
+        else:
+            by_species.append({
+                'Species': species_name.title(),
+                'A. gigas ncRNAs With Sequence Similarity': len(relevant_hits)
+            })
+    by_species.append({'Species': 'All', 
+        'A. gigas ncRNAs With Sequence Similarity': len(has_relevant_hit)})
+    by_species.sort(key=lambda b: b['A. gigas ncRNAs With Sequence Similarity'], reverse=True)
+    by_species.append({'Species': 'Others', 
+        'A. gigas ncRNAs With Sequence Similarity': len(relevant_hits_at_distant_species)})
+    
+    print("Calculating Perc With Sequence Homology")
+    homology_by_type = {}
+    for type_dict in types_json:
+        type_name = type_dict['ncRNA Type']
+        ncRNAs = type_dict['ncRNA IDs']
+        relevant_ncrnas = has_relevant_hit.intersection(ncRNAs)
+        homology_by_type[type_name] = (len(relevant_ncrnas) / len(ncRNAs)) * 100
+    
+    print('Loading rna types df')
+    types_df_path = gigas_dir + '/annotation/step_24-review_annotations/type_review.tsv'
+    types_df = pd.read_csv(types_df_path, sep='\t')
+    types_df["Found With High Similarity in Other Species"] = types_df.apply(
+        lambda row: homology_by_type[row['ncRNA Type']], axis=1)
+    
+    types_df.to_csv(os.path.dirname(homolog_df_path)+'/types_review.tsv', sep='\t', index=False)
+
+    species_df = pd.DataFrame(by_species)
+    species_df.to_csv(os.path.dirname(homolog_df_path)+'/similar_species.tsv', sep='\t', index=False)
+
 if __name__ == '__main__':
     gigas_dir = sys.argv[1]
     niloticus_genome_path = sys.argv[2]
@@ -370,19 +421,25 @@ if __name__ == '__main__':
     transcriptome_fasta = gigas_dir + '/annotation/step_25-write_transcriptome/transcriptome.fasta'
     if not os.path.exists(analysis_dir):
         os.mkdir(analysis_dir)
-    homolog_df, homolog_json = find_sequence_homologs(transcriptome_fasta, 
-        [niloticus_genome_path, arowana_genome_path, rnacentral_db_path], 
-        ['91721', '113540', None], analysis_dir)
-    
-    '''filter_ncrna_cmd = ['/usr/bin/Rscript', '--vanilla', 'filter_ncrna_counts.R', samples_tpm]
-    runCommand(' '.join(filter_ncrna_cmd))
 
-    results_df_path, expressed_df_path = find_lncrna_classes('counts_noduplicates_noprot.csv', analysis_dir)'''
+    homolog_df_path = analysis_dir+'/homologs.tsv'
+    homolog_json_path = analysis_dir+'/homologs.json'
+    if not os.path.exists(homolog_json_path):
+        homolog_df, homolog_json = find_sequence_homologs(transcriptome_fasta, 
+            [niloticus_genome_path, arowana_genome_path, rnacentral_db_path], 
+            ['91721', '113540', None], analysis_dir)
+    expand_types_review(gigas_dir, homolog_df_path)
+    
+    if not os.path.exists('counts_noduplicates_noprot.csv'):
+        filter_ncrna_cmd = ['/usr/bin/Rscript', '--vanilla', 'filter_ncrna_counts.R', samples_tpm]
+        runCommand(' '.join(filter_ncrna_cmd))
+    results_df_path, expressed_df_path = find_lncrna_classes('counts_noduplicates_noprot.csv', analysis_dir)
 
     print('Performing DE')
     de_file_path = analysis_dir + '/sex_de_filtered.csv'
-    de_cmd = ['/usr/bin/Rscript', '--vanilla', 'edge.R', expressed_df_path, de_file_path]
-    #runCommand(' '.join(de_cmd))
+    if not os.path.exists(de_file_path):
+        de_cmd = ['/usr/bin/Rscript', '--vanilla', 'edge.R', expressed_df_path, de_file_path]
+        runCommand(' '.join(de_cmd))
 
     print('Saving DE results to classification DF')
     de_df = pd.read_csv(de_file_path)

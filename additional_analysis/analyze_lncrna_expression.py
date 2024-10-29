@@ -2,12 +2,9 @@
 
 import pandas as pd
 from tqdm import tqdm
-import sys
 import numpy as np
 import math
 import os
-import obonet
-import networkx as nx
 
 '''
 usage:
