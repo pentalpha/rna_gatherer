@@ -13,6 +13,10 @@ from analyze_lncrna_expression import find_lncrna_classes
 
 ncbi = NCBITaxa()
 
+data_dir = '../data'
+growth_names_path = data_dir + '/function_sets/growth_functions.txt'
+maturation_names_path = data_dir + '/function_sets/sexual_maturation_funcs.txt'
+
 def runCommand(cmd, print_cmd=True):
     if print_cmd:
         print("\t> " + cmd)
@@ -409,6 +413,23 @@ def expand_types_review(gigas_dir, homolog_df_path, min_for_hit=0.8):
     species_df = pd.DataFrame(by_species)
     species_df.to_csv(os.path.dirname(homolog_df_path)+'/similar_species.tsv', sep='\t', index=False, decimal=',')
 
+def make_id2gos(out_file, id2go_file):
+    id2gos = {}
+    with open(id2go_file, 'r') as stream:
+        print("Reading " + id2go_file)
+        for line in stream:
+            cells = line.rstrip("\n").split("\t")
+            transcript_name = cells[0]
+            go_name = cells[1]
+            if not transcript_name in id2gos:
+                id2gos[transcript_name] = set()
+            id2gos[transcript_name].add(go_name)
+    with open(out_file, 'w') as stream:
+        print("\tWriting in id2gos format")
+        for name, gos in id2gos.items():
+            stream.write(name+"\t"+";".join(gos)+"\n")
+    return id2gos
+
 if __name__ == '__main__':
     gigas_dir = sys.argv[1]
     niloticus_genome_path = sys.argv[2]
@@ -419,6 +440,7 @@ if __name__ == '__main__':
     results_df_path = analysis_dir + '/ncrna_classification.tsv'
     expressed_df_path = analysis_dir + '/ncrna_expressed.tsv'
     transcriptome_fasta = gigas_dir + '/annotation/step_25-write_transcriptome/transcriptome.fasta'
+    genomes_df_path = 'other_genomes.csv'
     if not os.path.exists(analysis_dir):
         os.mkdir(analysis_dir)
 
@@ -473,9 +495,7 @@ if __name__ == '__main__':
         descriptions[ID] = obo_nodes[ID]['name']
     print("Solved " + str(len(correct_id.keys())))
 
-    data_dir = '../data'
-    growth_names_path = data_dir + '/function_sets/growth_functions.txt'
-    maturation_names_path = data_dir + '/function_sets/sexual_maturation_funcs.txt'
+    
     print("Reading GO lists")
     growth_names = get_go_list(growth_names_path)
     maturation_names = get_go_list(maturation_names_path)
@@ -510,3 +530,46 @@ if __name__ == '__main__':
 
     write_gene_lists(df2, analysis_dir, descriptions, correct_id)
     make_tissue_summary(df2_path, analysis_dir)
+
+
+    runCommand("mkdir " + outdir)
+    tissue_names = ['Brain', 'Gonad', 'Heart', 
+                    'Kidney', 'Liver', 'Lung',
+                    'Muscle', 'Skin']
+    print("Parsing gene lists")
+    lists_to_enrich = []
+    for tissue in tissue_names:
+        lists_to_enrich.append((tissue,gene_list_dir+"/"+tissue+".tissue.txt"))
+
+    for sex in ["female", "male"]:
+        lists_to_enrich.append(("Skin-"+sex+'-Sex_DE', gene_list_dir+"/Skin."+sex+"_expressed.txt"))
+        lists_to_enrich.append(("Skin-"+sex+'-Sex_DE', gene_list_dir+"/Skin."+sex+"_expressed_de.txt"))
+    lists_to_enrich.append(("Sex_DE", gene_list_dir+"/sex_diff.txt"))
+
+    lists_to_enrich.append(("housekeeping",gene_list_dir+"/housekeeping.txt"))
+    #lists_to_enrich.append(("growth",gene_list_dir+"/involved_in_growth.txt"))
+    #lists_to_enrich.append(("growth_housekeeping",gene_list_dir+"/involved_in_growth-housekeeping.txt"))
+    #lists_to_enrich.append(("maturation",gene_list_dir+"/involved_in_maturation.txt"))
+    associations_file_path = outdir + "/associations.tsv"
+    all_ncgene_ids_file = outdir + "/ncrna_pop.txt"
+    associations = make_id2gos(associations_file_path, predictions_file)
+    # = make_population_from_associations(outdir, associations)
+    enrichments_dir = outdir + "/enrichments"
+    runCommand("mkdir " + enrichments_dir)
+
+    # %%
+    for name, list_file in lists_to_enrich:
+        if not os.path.exists(list_file):
+            print("Could not find " + list_file)
+
+    cmds = {name: " ".join(["find_enrichment.py",
+                            "--pval="+str(max_pval)+" --indent",
+                            "--obo", obo_path,
+                            "--outfile", 
+                            enrichments_dir+"/"+name+".tsv",
+                            list_file, all_ncgene_ids_file,
+                            associations_file_path])
+            for name, list_file in lists_to_enrich}
+
+    for tissue_name, cmd in tqdm(cmds.items()):
+        runCommand(cmd)

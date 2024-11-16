@@ -6,6 +6,8 @@
 - [x] Housekeeping classification;
 - [x] Script for DE analysis (change criteria to presented in the paper);
 - [ ] GOATools - gene set enrichment;
+    - [ ] Find file with all ncRNA GO annotations;
+    - [ ] Create file with all ncRNA IDs;
     - [ ] Housekeeping;
     - [ ] Sex DE;
     - [ ] Tissue Specific (each tissue);
