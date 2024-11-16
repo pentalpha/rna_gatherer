@@ -192,7 +192,7 @@ def taxid_from_dbid(row):
     
     return None
 
-def find_sequence_homologs(transcripts_fasta, fasta_dbs, taxids, analysis_dir):
+def find_sequence_homologs(transcripts_fasta, genomes_path, analysis_dir):
     all_rna_names = []
     for rawline in open(transcripts_fasta, 'r').readlines():
         if rawline.startswith('>'):
@@ -200,11 +200,27 @@ def find_sequence_homologs(transcripts_fasta, fasta_dbs, taxids, analysis_dir):
     n_rnas = len(all_rna_names)
 
     align_results = []
-    for fasta_db in fasta_dbs:
-        result_paf = analysis_dir + '/align_to_'+os.path.basename(fasta_db)+'.paf'
+    genomes = []
+    for rawline in open(genomes_path, 'r'):
+        family, name, taxid, url = rawline.rstrip('\n').split(',')
+        print(family, name, url)
+        if url.startswith('http'):
+            genome_dir = analysis_dir + '/genome_'+name.replace(' ', '_')
+            genome_path = genome_dir + '/' + url.split('/')[-1]
+            if not os.path.exists(genome_dir):
+                os.mkdir(genome_dir)
+            if not os.path.exists(genome_path):
+                runCommand("cd "+genome_dir+" && wget "+url)
+        else:
+            genome_path = url
+        assert os.path.exists(genome_path)
+        genomes.append([family, name, taxid, genome_path])
+    
+    for family, name, taxid, fasta_db in genomes:
+        result_paf = analysis_dir + '/align_to_'+name.replace(' ', '_')+'.paf'
         print('Aligning to', fasta_db)
         created = os.path.exists(result_paf)
-        align_results.append(result_paf)
+        
         if not created:
             index_1 = fasta_db + '.mmi'
             index_2 = os.path.dirname(fasta_db) + '/index.mmi'
@@ -223,23 +239,20 @@ def find_sequence_homologs(transcripts_fasta, fasta_dbs, taxids, analysis_dir):
             code = runCommand(cmd)
         else:
             print(result_paf, 'already calculated')
-    
+        align_results.append([family, name, taxid, result_paf])
     dfs = []
-    for result_path, taxid in zip(align_results, taxids):
-        print('Loading', result_path)
-        minimap_df = pd.read_csv(result_path, sep='\t', header=None, index_col=False,
+    for family, name, taxid, result_paf in align_results:
+        print('Loading', result_paf)
+        minimap_df = pd.read_csv(result_paf, sep='\t', header=None, index_col=False,
                 names=["qseqid","qseq_len","qstart","qend","strand",
                     "sseqid","sseq_len","sstart","send","matchs",
                     "block_len","quality","13th","14th","15th","16th","17th","18th"])
         minimap_df = minimap_df.astype({"qstart": 'int32', "qend": 'int32', "qseq_len": "int32",
                     "sstart": 'int32', "send": 'int32', "sseq_len": "int32",
                     "quality": 'int32', "block_len": "int32", "matchs": "int32"})
-        
-        if taxid != None:
-            minimap_df['taxid'] = int(taxid)
-        else:
-            minimap_df["taxid"] = minimap_df.apply(
-                lambda row: taxid_from_dbid(row), axis=1)
+        minimap_df['taxid'] = int(taxid)
+        minimap_df['name'] = name
+        minimap_df['family'] = family
             
         dfs.append(minimap_df)
 
@@ -432,9 +445,9 @@ def make_id2gos(out_file, id2go_file):
 
 if __name__ == '__main__':
     gigas_dir = sys.argv[1]
-    niloticus_genome_path = sys.argv[2]
-    arowana_genome_path = sys.argv[3]
-    rnacentral_db_path = sys.argv[4]
+    #niloticus_genome_path = sys.argv[2]
+    #arowana_genome_path = sys.argv[3]
+    #rnacentral_db_path = sys.argv[4]
     analysis_dir = gigas_dir + '/analysis_for_paper'
     samples_tpm = gigas_dir + '/go_predict/samples_tpm.tsv'
     results_df_path = analysis_dir + '/ncrna_classification.tsv'
@@ -446,22 +459,21 @@ if __name__ == '__main__':
 
     homolog_df_path = analysis_dir+'/homologs.tsv'
     homolog_json_path = analysis_dir+'/homologs.json'
-    if not os.path.exists(homolog_json_path):
-        homolog_df, homolog_json = find_sequence_homologs(transcriptome_fasta, 
-            [niloticus_genome_path, arowana_genome_path, rnacentral_db_path], 
-            ['91721', '113540', None], analysis_dir)
+    #if not os.path.exists(homolog_json_path):
+    homolog_df, homolog_json = find_sequence_homologs(transcriptome_fasta, genomes_df_path, analysis_dir)
     expand_types_review(gigas_dir, homolog_df_path)
-    quit()
-    if not os.path.exists('counts_noduplicates_noprot.csv'):
+    
+    de_file_path = analysis_dir + '/sex_de_filtered.csv'
+    '''if not os.path.exists('counts_noduplicates_noprot.csv'):
         filter_ncrna_cmd = ['/usr/bin/Rscript', '--vanilla', 'filter_ncrna_counts.R', samples_tpm]
         runCommand(' '.join(filter_ncrna_cmd))
     results_df_path, expressed_df_path = find_lncrna_classes('counts_noduplicates_noprot.csv', analysis_dir)
 
     print('Performing DE')
-    de_file_path = analysis_dir + '/sex_de_filtered.csv'
+    
     if not os.path.exists(de_file_path):
         de_cmd = ['/usr/bin/Rscript', '--vanilla', 'edge.R', expressed_df_path, de_file_path]
-        runCommand(' '.join(de_cmd))
+        runCommand(' '.join(de_cmd))'''
 
     print('Saving DE results to classification DF')
     de_df = pd.read_csv(de_file_path)
@@ -495,7 +507,6 @@ if __name__ == '__main__':
         descriptions[ID] = obo_nodes[ID]['name']
     print("Solved " + str(len(correct_id.keys())))
 
-    
     print("Reading GO lists")
     growth_names = get_go_list(growth_names_path)
     maturation_names = get_go_list(maturation_names_path)
