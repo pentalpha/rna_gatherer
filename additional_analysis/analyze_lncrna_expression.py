@@ -106,7 +106,7 @@ def find_lncrna_classes(df_path, output_path):
 
     print("Reading counts")
     df = pd.read_csv(df_path, sep=',', header=0, index_col='gene')
-
+    
     groups = {'Heart': ['Heart_Male'], 
             'Brain': ['Brain_Female', 'Brain_Male'], 
             'Liver': ['Liver_Female', 'Liver_Male'], 

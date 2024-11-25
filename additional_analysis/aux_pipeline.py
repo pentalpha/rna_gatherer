@@ -200,32 +200,7 @@ def get_ncbi_genome_href(accession, assembly):
              +accession+'_'+assembly+'/'+accession+'_'+assembly+'_genomic.fna.gz')
     return b_new
 
-def find_sequence_homologs(transcripts_fasta, genomes_path, analysis_dir):
-    all_rna_names = []
-    for rawline in open(transcripts_fasta, 'r').readlines():
-        if rawline.startswith('>'):
-            all_rna_names.append(rawline.lstrip('>'))
-    n_rnas = len(all_rna_names)
-
-    genomes = []
-    for rawline in open(genomes_path, 'r'):
-        print(rawline)
-        print(rawline.rstrip('\n').split(','))
-        accession, assembly, family, name, taxid = rawline.rstrip('\n').split(',')
-        url = get_ncbi_genome_href(accession, assembly)
-        print(family, name, url)
-        
-        genome_dir = analysis_dir + '/genome_'+name.replace(' ', '_')
-        genome_path = genome_dir + '/' + url.split('/')[-1]
-        if not os.path.exists(genome_dir):
-            os.mkdir(genome_dir)
-        if not os.path.exists(genome_path):
-            runCommand("cd "+genome_dir+" && wget "+url)
-        
-        assert os.path.exists(genome_path)
-        genomes.append([family, name, taxid, genome_path])
-    
-    align_results = align_with_minimap2(genomes, analysis_dir, transcripts_fasta)
+def create_homologs_df(align_results):
     dfs = []
     for family, name, taxid, result_paf in align_results:
         print('Loading', result_paf)
@@ -303,8 +278,41 @@ def find_sequence_homologs(transcripts_fasta, genomes_path, analysis_dir):
 
     print(str(len(minimap_df)) + " total ncRNA with homologs.")
 
+    return minimap_df
+
+def find_sequence_homologs(transcripts_fasta, genomes_path, analysis_dir):
+    all_rna_names = []
+    for rawline in open(transcripts_fasta, 'r').readlines():
+        if rawline.startswith('>'):
+            all_rna_names.append(rawline.lstrip('>'))
+    n_rnas = len(all_rna_names)
+
+    genomes = []
+    for rawline in open(genomes_path, 'r'):
+        print(rawline)
+        print(rawline.rstrip('\n').split(','))
+        accession, assembly, family, genus, name, taxid = rawline.rstrip('\n').split(',')
+        url = get_ncbi_genome_href(accession, assembly)
+        print(family, name, url)
+        
+        genome_dir = analysis_dir + '/genome_'+name.replace(' ', '_')
+        genome_path = genome_dir + '/' + url.split('/')[-1]
+        if not os.path.exists(genome_dir):
+            os.mkdir(genome_dir)
+        if not os.path.exists(genome_path):
+            runCommand("cd "+genome_dir+" && wget "+url)
+        
+        assert os.path.exists(genome_path)
+        genomes.append([family, name, taxid, genome_path])
+    
+    align_results = align_with_minimap2(genomes, analysis_dir, transcripts_fasta)
+    
     homologs_path = analysis_dir + '/homologs.tsv'
-    minimap_df.to_csv(homologs_path, sep='\t')
+    if not os.path.exists(homologs_path):
+        minimap_df = create_homologs_df(align_results)
+        minimap_df.to_csv(homologs_path, sep='\t')
+    else:
+        minimap_df = pd.read_csv(homologs_path, sep='\t')
 
     homology_json = {}
     for name, species_hits in minimap_df.groupby(["name"], sort=True):
@@ -356,10 +364,10 @@ def expand_types_review(gigas_dir, homolog_df_path, min_for_hit=0.8):
     relevant_hits_at_distant_species = set()
     by_species = []
     for species_name, species_df in homologs_df.groupby(['species']):
-        common_names = species_df['common_name'].unique().tolist()
+        '''common_names = species_df['common_name'].unique().tolist()
         common_names = [c for c in common_names if type(c) == str and not(c in ['False'])]
         if len(common_names) > 0:
-            species_name = common_names[0]
+            species_name = common_names[0]'''
         relevant_hits = species_df['qseqid'].unique().tolist()
         has_relevant_hit.update(relevant_hits)
         
@@ -422,22 +430,26 @@ if __name__ == '__main__':
     results_df_path = analysis_dir + '/ncrna_classification.tsv'
     expressed_df_path = analysis_dir + '/ncrna_expressed.tsv'
     transcriptome_fasta = gigas_dir + '/annotation/step_25-write_transcriptome/transcriptome.fasta'
+    lncrna_fasta = gigas_dir + '/annotation/step_25-write_transcriptome/lncRNA.fasta'
     genomes_df_path = 'other_genomes.csv'
     if not os.path.exists(analysis_dir):
         os.mkdir(analysis_dir)
+
+    lncrna_names = [l.rstrip('\n').lstrip('>') for l in open(lncrna_fasta).readlines() if '>' in l]
 
     homolog_df_path = analysis_dir+'/homologs.tsv'
     homolog_json_path = analysis_dir+'/homologs.json'
     #if not os.path.exists(homolog_json_path):
     homolog_df, homolog_json = find_sequence_homologs(transcriptome_fasta, genomes_df_path, analysis_dir)
-    quit()
+    
     expand_types_review(gigas_dir, homolog_df_path)
     
     de_file_path = analysis_dir + '/sex_de_filtered.csv'
+    results_df_path, expressed_df_path = find_lncrna_classes('counts_noduplicates_noprot.csv', analysis_dir)
     '''if not os.path.exists('counts_noduplicates_noprot.csv'):
         filter_ncrna_cmd = ['/usr/bin/Rscript', '--vanilla', 'filter_ncrna_counts.R', samples_tpm]
         runCommand(' '.join(filter_ncrna_cmd))
-    results_df_path, expressed_df_path = find_lncrna_classes('counts_noduplicates_noprot.csv', analysis_dir)
+    
 
     print('Performing DE')
     
@@ -507,7 +519,8 @@ if __name__ == '__main__':
     del df2['gene']
     df2['Number_Of_DE_Packages'] = 2
     df2_path = analysis_dir+"/tissue_analysis.tsv"
-    df2.to_csv(df2_path, sep='\t', index=False, header=True)
+    tissue_analysis_df = df2[df2['Name'].isin(lncrna_names)]
+    tissue_analysis_df.to_csv(df2_path, sep='\t', index=False, header=True)
 
     write_gene_lists(df2, analysis_dir, descriptions, correct_id)
     make_tissue_summary(df2_path, analysis_dir)
